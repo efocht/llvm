@@ -1325,7 +1325,7 @@ VETargetLowering::VETargetLowering(const TargetMachine &TM,
   addRegisterClass(MVT::i32, &VE::I32RegClass);
   addRegisterClass(MVT::i64, &VE::I64RegClass);
   addRegisterClass(MVT::f32, &VE::F32RegClass);
-  addRegisterClass(MVT::f64, &VE::F64RegClass);
+  addRegisterClass(MVT::f64, &VE::I64RegClass);
   addRegisterClass(MVT::f128, &VE::F128RegClass);
   addRegisterClass(MVT::v256i32, &VE::V64RegClass);
   addRegisterClass(MVT::v256i64, &VE::V64RegClass);
@@ -1343,8 +1343,12 @@ VETargetLowering::VETargetLowering(const TargetMachine &TM,
   }
 
   // VE doesn't have i1 sign extending load
-  for (MVT VT : MVT::integer_valuetypes())
+  for (MVT VT : MVT::integer_valuetypes()) {
     setLoadExtAction(ISD::SEXTLOAD, VT, MVT::i1, Promote);
+    setLoadExtAction(ISD::ZEXTLOAD, VT, MVT::i1, Promote);
+    setLoadExtAction(ISD::EXTLOAD,  VT, MVT::i1, Promote);
+    setTruncStoreAction(MVT::i64, MVT::i1, Expand);
+  }
 
   // Turn FP truncstore into trunc + store.
   setTruncStoreAction(MVT::f64, MVT::f32, Expand);
@@ -1358,17 +1362,11 @@ VETargetLowering::VETargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::BlockAddress, PtrVT, Custom);
 
   // VE has no REM or DIVREM operations.
-  setOperationAction(ISD::UREM, MVT::i32, Expand);
-  setOperationAction(ISD::SREM, MVT::i32, Expand);
-  setOperationAction(ISD::SDIVREM, MVT::i32, Expand);
-  setOperationAction(ISD::UDIVREM, MVT::i32, Expand);
-
-  // ... nor does VE
-  if (1) {
-    setOperationAction(ISD::UREM, MVT::i64, Expand);
-    setOperationAction(ISD::SREM, MVT::i64, Expand);
-    setOperationAction(ISD::SDIVREM, MVT::i64, Expand);
-    setOperationAction(ISD::UDIVREM, MVT::i64, Expand);
+  for (MVT VT : MVT::integer_valuetypes()) {
+    setOperationAction(ISD::UREM, VT, Expand);
+    setOperationAction(ISD::SREM, VT, Expand);
+    setOperationAction(ISD::SDIVREM, VT, Expand);
+    setOperationAction(ISD::UDIVREM, VT, Expand);
   }
 
   // Custom expand fp<->sint
@@ -1388,11 +1386,11 @@ VETargetLowering::VETargetLowering(const TargetMachine &TM,
 #endif
 
   // VE doesn't have BRCOND either, it has BR_CC.
-  for (MVT VT : MVT::all_valuetypes()) {
-    setOperationAction(ISD::BRCOND, VT, Expand);
-    setOperationAction(ISD::BRIND,  VT, Expand);
-    setOperationAction(ISD::BR_JT,  VT, Expand);
-  }
+  setOperationAction(ISD::BRCOND, MVT::Other, Expand);
+
+  // BRIND/BR_JT are not implemented yet.
+  setOperationAction(ISD::BRIND,  MVT::Other, Expand);
+  setOperationAction(ISD::BR_JT,  MVT::Other, Expand);
 
 #if 0
   // Should we use EmitInstrWithCustomInserter()?  Not sure atm.
@@ -1451,27 +1449,34 @@ VETargetLowering::VETargetLowering(const TargetMachine &TM,
     setLibcallName(RTLIB::SRA_I128, nullptr);
   }
 
-  if (!1) {
-    // VEV8 does not have FNEGD and FABSD.
-    setOperationAction(ISD::FNEG, MVT::f64, Custom);
-    setOperationAction(ISD::FABS, MVT::f64, Custom);
+  for (MVT VT : MVT::fp_valuetypes()) {
+    setOperationAction(ISD::FMA, VT, Legal);
+    setOperationAction(ISD::FREM, VT, Expand);
+    setOperationAction(ISD::FNEG, VT, Expand);
+    setOperationAction(ISD::FABS, VT, Expand);
+    setOperationAction(ISD::FSQRT, VT, Expand);
+    setOperationAction(ISD::FSIN, VT, Expand);
+    setOperationAction(ISD::FCOS, VT, Expand);
+    setOperationAction(ISD::FPOWI, VT, Expand);
+    setOperationAction(ISD::FPOW, VT, Expand);
+    setOperationAction(ISD::FLOG, VT, Expand);
+    setOperationAction(ISD::FLOG2, VT, Expand);
+    setOperationAction(ISD::FLOG10, VT, Expand);
+    setOperationAction(ISD::FEXP, VT, Expand);
+    setOperationAction(ISD::FEXP2, VT, Expand);
+    setOperationAction(ISD::FCEIL, VT, Expand);
+    setOperationAction(ISD::FTRUNC, VT, Expand);
+    setOperationAction(ISD::FRINT, VT, Expand);
+    setOperationAction(ISD::FNEARBYINT, VT, Expand);
+    setOperationAction(ISD::FROUND, VT, Expand);
+    setOperationAction(ISD::FFLOOR, VT, Expand);
+    setOperationAction(ISD::FMINNUM, VT, Expand);
+    setOperationAction(ISD::FMAXNUM, VT, Expand);
+    setOperationAction(ISD::FMINNAN, VT, Expand);
+    setOperationAction(ISD::FMAXNAN, VT, Expand);
+    setOperationAction(ISD::FSINCOS, VT, Expand);
   }
 
-  setOperationAction(ISD::FSIN , MVT::f128, Expand);
-  setOperationAction(ISD::FCOS , MVT::f128, Expand);
-  setOperationAction(ISD::FSINCOS, MVT::f128, Expand);
-  setOperationAction(ISD::FREM , MVT::f128, Expand);
-  setOperationAction(ISD::FMA  , MVT::f128, Expand);
-  setOperationAction(ISD::FSIN , MVT::f64, Expand);
-  setOperationAction(ISD::FCOS , MVT::f64, Expand);
-  setOperationAction(ISD::FSINCOS, MVT::f64, Expand);
-  setOperationAction(ISD::FREM , MVT::f64, Expand);
-  setOperationAction(ISD::FMA  , MVT::f64, Expand);
-  setOperationAction(ISD::FSIN , MVT::f32, Expand);
-  setOperationAction(ISD::FCOS , MVT::f32, Expand);
-  setOperationAction(ISD::FSINCOS, MVT::f32, Expand);
-  setOperationAction(ISD::FREM , MVT::f32, Expand);
-  setOperationAction(ISD::FMA  , MVT::f32, Expand);
   setOperationAction(ISD::CTTZ , MVT::i32, Expand);
   setOperationAction(ISD::CTLZ , MVT::i32, Expand);
   setOperationAction(ISD::ROTL , MVT::i32, Expand);
@@ -1480,9 +1485,6 @@ VETargetLowering::VETargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::FCOPYSIGN, MVT::f128, Expand);
   setOperationAction(ISD::FCOPYSIGN, MVT::f64, Expand);
   setOperationAction(ISD::FCOPYSIGN, MVT::f32, Expand);
-  setOperationAction(ISD::FPOW , MVT::f128, Expand);
-  setOperationAction(ISD::FPOW , MVT::f64, Expand);
-  setOperationAction(ISD::FPOW , MVT::f32, Expand);
 
   setOperationAction(ISD::SHL_PARTS, MVT::i32, Expand);
   setOperationAction(ISD::SRA_PARTS, MVT::i32, Expand);
@@ -1491,7 +1493,7 @@ VETargetLowering::VETargetLowering(const TargetMachine &TM,
   // Expands to [SU]MUL_LOHI.
   setOperationAction(ISD::MULHU,     MVT::i32, Expand);
   setOperationAction(ISD::MULHS,     MVT::i32, Expand);
-  setOperationAction(ISD::MUL,       MVT::i32, Expand);
+  //setOperationAction(ISD::MUL,       MVT::i32, Expand);
 
 #if 0
   if (Subtarget->useSoftMulDiv()) {
@@ -1550,8 +1552,6 @@ VETargetLowering::VETargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::FSQRT, MVT::f128, Legal);
   setOperationAction(ISD::FP_EXTEND, MVT::f128, Legal);
   setOperationAction(ISD::FP_ROUND,  MVT::f64, Legal);
-  setOperationAction(ISD::FNEG, MVT::f128, Legal);
-  setOperationAction(ISD::FABS, MVT::f128, Legal);
 
 #if 0
   if (Subtarget->fixAllFDIVSQRT()) {
@@ -1567,6 +1567,13 @@ VETargetLowering::VETargetLowering(const TargetMachine &TM,
 #endif
 
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::Other, Custom);
+
+  // TRAP to expand (which turns it into abort).
+  setOperationAction(ISD::TRAP, MVT::Other, Expand);
+
+  // On most systems, DEBUGTRAP and TRAP have no difference. The "Expand"
+  // here is to inform DAG Legalizer to replace DEBUGTRAP with TRAP.
+  setOperationAction(ISD::DEBUGTRAP, MVT::Other, Expand);
 
   // Set function alignment to 16 bytes (4 bits)
   setMinFunctionAlignment(4);
@@ -2353,39 +2360,6 @@ static SDValue LowerRETURNADDR(SDValue Op, SelectionDAG &DAG,
 }
 
 #if 0
-static SDValue LowerF64Op(SDValue SrcReg64, const SDLoc &dl, SelectionDAG &DAG,
-                          unsigned opcode) {
-  assert(SrcReg64.getValueType() == MVT::f64 && "LowerF64Op called on non-double!");
-  assert(opcode == ISD::FNEG || opcode == ISD::FABS);
-
-  // Lower fneg/fabs on f64 to fneg/fabs on f32.
-  // fneg f64 => fneg f32:sub_even, fmov f32:sub_odd.
-  // fabs f64 => fabs f32:sub_even, fmov f32:sub_odd.
-
-  // Note: in little-endian, the floating-point value is stored in the
-  // registers are in the opposite order, so the subreg with the sign
-  // bit is the highest-numbered (odd), rather than the
-  // lowest-numbered (even).
-
-  SDValue Hi32 = DAG.getTargetExtractSubreg(VE::sub_even, dl, MVT::f32,
-                                            SrcReg64);
-  SDValue Lo32 = DAG.getTargetExtractSubreg(VE::sub_odd, dl, MVT::f32,
-                                            SrcReg64);
-
-  if (DAG.getDataLayout().isLittleEndian())
-    Lo32 = DAG.getNode(opcode, dl, MVT::f32, Lo32);
-  else
-    Hi32 = DAG.getNode(opcode, dl, MVT::f32, Hi32);
-
-  SDValue DstReg64 = SDValue(DAG.getMachineNode(TargetOpcode::IMPLICIT_DEF,
-                                                dl, MVT::f64), 0);
-  DstReg64 = DAG.getTargetInsertSubreg(VE::sub_even, dl, MVT::f64,
-                                       DstReg64, Hi32);
-  DstReg64 = DAG.getTargetInsertSubreg(VE::sub_odd, dl, MVT::f64,
-                                       DstReg64, Lo32);
-  return DstReg64;
-}
-
 // Lower a f128 load into two f64 loads.
 static SDValue LowerF128Load(SDValue Op, SelectionDAG &DAG)
 {
@@ -2502,49 +2476,6 @@ static SDValue LowerSTORE(SDValue Op, SelectionDAG &DAG)
 #endif
 
 #if 0
-static SDValue LowerFNEGorFABS(SDValue Op, SelectionDAG &DAG, bool isV9) {
-  assert((Op.getOpcode() == ISD::FNEG || Op.getOpcode() == ISD::FABS)
-         && "invalid opcode");
-
-  SDLoc dl(Op);
-
-  if (Op.getValueType() == MVT::f64)
-    return LowerF64Op(Op.getOperand(0), dl, DAG, Op.getOpcode());
-  if (Op.getValueType() != MVT::f128)
-    return Op;
-
-  // Lower fabs/fneg on f128 to fabs/fneg on f64
-  // fabs/fneg f128 => fabs/fneg f64:sub_even64, fmov f64:sub_odd64
-  // (As with LowerF64Op, on little-endian, we need to negate the odd
-  // subreg)
-
-  SDValue SrcReg128 = Op.getOperand(0);
-  SDValue Hi64 = DAG.getTargetExtractSubreg(SP::sub_even64, dl, MVT::f64,
-                                            SrcReg128);
-  SDValue Lo64 = DAG.getTargetExtractSubreg(SP::sub_odd64, dl, MVT::f64,
-                                            SrcReg128);
-
-  if (DAG.getDataLayout().isLittleEndian()) {
-    if (isV9)
-      Lo64 = DAG.getNode(Op.getOpcode(), dl, MVT::f64, Lo64);
-    else
-      Lo64 = LowerF64Op(Lo64, dl, DAG, Op.getOpcode());
-  } else {
-    if (isV9)
-      Hi64 = DAG.getNode(Op.getOpcode(), dl, MVT::f64, Hi64);
-    else
-      Hi64 = LowerF64Op(Hi64, dl, DAG, Op.getOpcode());
-  }
-
-  SDValue DstReg128 = SDValue(DAG.getMachineNode(TargetOpcode::IMPLICIT_DEF,
-                                                 dl, MVT::f128), 0);
-  DstReg128 = DAG.getTargetInsertSubreg(SP::sub_even64, dl, MVT::f128,
-                                        DstReg128, Hi64);
-  DstReg128 = DAG.getTargetInsertSubreg(SP::sub_odd64, dl, MVT::f128,
-                                        DstReg128, Lo64);
-  return DstReg128;
-}
-
 static SDValue LowerADDC_ADDE_SUBC_SUBE(SDValue Op, SelectionDAG &DAG) {
 
   if (Op.getValueType() != MVT::i64)
@@ -2684,13 +2615,16 @@ SDValue VETargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     EVT VT = Op.getValueType();
     SDValue S0;
     SDValue V0, V1, V2, V3, V4, V5;
+    SDValue SubRegF32 = DAG.getTargetConstant(VE::sub_f32, dl, MVT::i32);
 
     V0 = Op.getOperand(1);
     V1 = Op.getOperand(2);
 
     V5 = SDValue(DAG.getMachineNode(VE::VRCPsv, dl, VT, V1), 0);  // V5 = 1.0f / V1
-    S0 = SDValue(DAG.getMachineNode(VE::LEASLzzi, dl, MVT::f32,
-                                    DAG.getTargetConstant(0x3f800000, dl, MVT::i32)), 0); // S0 = 1.0f
+    S0 = SDValue(DAG.getMachineNode(VE::LEASLzzi, dl, MVT::i64,
+                                    DAG.getTargetConstant(0x3f800000, dl, MVT::i64)), 0); // S0 = 1.0f
+    S0 = SDValue(DAG.getMachineNode(TargetOpcode::EXTRACT_SUBREG, dl, MVT::f32,
+                                    S0, SubRegF32), 0);
     V4 = SDValue(DAG.getMachineNode(VE::VFNMSBsr, dl, VT, S0, V1, V5), 0); // V4 = -(V1*V5-S0)
     V3 = SDValue(DAG.getMachineNode(VE::VFMADsv,  dl, VT, V5, V5, V4), 0); // V3 = V5*V4+V5
     V2 = SDValue(DAG.getMachineNode(VE::VFMPsv,   dl, VT, V0, V3), 0);     // V1 = V0*V3
@@ -2714,11 +2648,11 @@ SDValue VETargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
 
     V5 = SDValue(DAG.getMachineNode(VE::VRCPpv, dl, VT, V1), 0);  // V5 = 1.0f / V1
     // S0 = 1.0f|1.0f
-    S1 = SDValue(DAG.getMachineNode(VE::LEAzzi, dl, MVT::i32,
-                                    DAG.getTargetConstant(0x3f800000, dl, MVT::i32)), 0);
-    S0 = SDValue(DAG.getMachineNode(VE::LEASLrzi, dl, MVT::f32,
+    S1 = SDValue(DAG.getMachineNode(VE::LEAzzi, dl, MVT::i64,
+                                    DAG.getTargetConstant(0x3f800000, dl, MVT::i64)), 0);
+    S0 = SDValue(DAG.getMachineNode(VE::LEASLrzi, dl, MVT::i64,
                                     S1,
-                                    DAG.getTargetConstant(0x3f800000, dl, MVT::i32)), 0);
+                                    DAG.getTargetConstant(0x3f800000, dl, MVT::i64)), 0);
     V4 = SDValue(DAG.getMachineNode(VE::VFNMSBpr, dl, VT, S0, V1, V5), 0); // V4 = -(V1*V5-S0)
     V3 = SDValue(DAG.getMachineNode(VE::VFMADpv,  dl, VT, V5, V5, V4), 0); // V3 = V5*V4+V5
     V2 = SDValue(DAG.getMachineNode(VE::VFMPpv,   dl, VT, V0, V3), 0);     // V1 = V0*V3
@@ -2748,13 +2682,16 @@ SDValue VETargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     EVT VT = Op.getValueType();
     SDValue S0, S1;
     SDValue V0, V1, V2, V3, V4;
+    SDValue SubRegF32 = DAG.getTargetConstant(VE::sub_f32, dl, MVT::i32);
 
     S0 = Op.getOperand(1);
     V0 = Op.getOperand(2);
 
     V4 = SDValue(DAG.getMachineNode(VE::VRCPsv, dl, VT, V0), 0);  // V4 = 1.0f / V0
-    S1 = SDValue(DAG.getMachineNode(VE::LEASLzzi, dl, MVT::f32,
-                                    DAG.getTargetConstant(0x3f800000, dl, MVT::i32)), 0); // S1 = 1.0f
+    S1 = SDValue(DAG.getMachineNode(VE::LEASLzzi, dl, MVT::i64,
+                                    DAG.getTargetConstant(0x3f800000, dl, MVT::i64)), 0); // S1 = 1.0f
+    S1 = SDValue(DAG.getMachineNode(TargetOpcode::EXTRACT_SUBREG, dl, MVT::f32,
+                                    S1, SubRegF32), 0);
     V2 = SDValue(DAG.getMachineNode(VE::VFNMSBsr, dl, VT, S1, V0, V4), 0); // V2 = -(V0*V4-S1)
     V2 = SDValue(DAG.getMachineNode(VE::VFMADsv,  dl, VT, V4, V4, V2), 0); // V2 = V4*V2+V4
     V1 = SDValue(DAG.getMachineNode(VE::VFMPsr,   dl, VT, S0, V2), 0);     // V1 = S0*V2
@@ -2781,9 +2718,11 @@ SDValue VETargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     Ops.push_back(DAG.getRegister(VE::V0, MVT::v256f64));
 
     // preserved registers
-    //static const uint32_t Mask_expf[] = {0xa1ffffff, 0x007fffff, 0xffffffee, 0x003fffff, 0xfffffc7e, 0x3fffffff, 0xffff87f0};
-    static const uint32_t Mask_expf[] = {0xa5ffffff, 0x387fffff, 0xffffffef, 0x003fffff, 0xffffffff, 0x7fffffff, 0xffffefff};
-    Ops.push_back(DAG.getRegisterMask(Mask_expf));
+    const VERegisterInfo *TRI = Subtarget->getRegisterInfo();
+    const uint32_t *Mask = TRI->getCallPreservedMask(DAG.getMachineFunction(),
+        CallingConv::VE_VEC_EXPF);
+    assert(Mask && "Missing call preserved mask for calling convention");
+    Ops.push_back(DAG.getRegisterMask(Mask));
 
     if (InGlue.getNode())
         Ops.push_back(InGlue);
@@ -2861,9 +2800,6 @@ LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::FSQRT:              // return LowerF128Op(Op, DAG,
                                 //        getLibcallName(RTLIB::SQRT_F128),1);
     report_fatal_error("FSQRT expansion is not implemented yet");
-  case ISD::FABS:
-  case ISD::FNEG:               // return LowerFNEGorFABS(Op, DAG, isV9);
-    report_fatal_error("FABS or FNEG expansion is not implemented yet");
   case ISD::FP_EXTEND:          // return LowerF128_FPEXTEND(Op, DAG, *this);
     report_fatal_error("FP_EXTEND expansion is not implemented yet");
   case ISD::FP_ROUND:           // return LowerF128_FPROUND(Op, DAG, *this);
@@ -3261,14 +3197,14 @@ VETargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
       return std::make_pair(0U, &VE::I64RegClass);
     case 'f':
       if (VT == MVT::f32 || VT == MVT::f64)
-        return std::make_pair(0U, &VE::F64RegClass);
+        return std::make_pair(0U, &VE::I64RegClass);
       else if (VT == MVT::f128)
         return std::make_pair(0U, &VE::F128RegClass);
       llvm_unreachable("Unknown ValueType for f-register-type!");
       break;
     case 'e':
       if (VT == MVT::f32 || VT == MVT::f64)
-        return std::make_pair(0U, &VE::F64RegClass);
+        return std::make_pair(0U, &VE::I64RegClass);
       else if (VT == MVT::f128)
         return std::make_pair(0U, &VE::F128RegClass);
       llvm_unreachable("Unknown ValueType for e-register-type!");
