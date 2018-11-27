@@ -1,6 +1,6 @@
 ; RUN: llc < %s -mtriple=ve-unknown-unknown | FileCheck %s
 
-define float @selectccsgti8(i8, i8, float, float) #0 {
+define float @selectccsgti8(i8, i8, float, float) {
 ; CHECK-LABEL: selectccsgti8:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    # kill: def $sf3 killed $sf3 def $sx3
@@ -18,7 +18,7 @@ define float @selectccsgti8(i8, i8, float, float) #0 {
   ret float %6
 }
 
-define float @selectccsgti16(i16, i16, float, float) #0 {
+define float @selectccsgti16(i16, i16, float, float) {
 ; CHECK-LABEL: selectccsgti16:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    # kill: def $sf3 killed $sf3 def $sx3
@@ -36,7 +36,7 @@ define float @selectccsgti16(i16, i16, float, float) #0 {
   ret float %6
 }
 
-define float @selectccsgti32(i32, i32, float, float) #0 {
+define float @selectccsgti32(i32, i32, float, float) {
 ; CHECK-LABEL: selectccsgti32:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    # kill: def $sf3 killed $sf3 def $sx3
@@ -50,7 +50,7 @@ define float @selectccsgti32(i32, i32, float, float) #0 {
   ret float %6
 }
 
-define float @selectccsgti64(i64, i64, float, float) #0 {
+define float @selectccsgti64(i64, i64, float, float) {
 ; CHECK-LABEL: selectccsgti64:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    # kill: def $sf3 killed $sf3 def $sx3
@@ -64,7 +64,29 @@ define float @selectccsgti64(i64, i64, float, float) #0 {
   ret float %6
 }
 
-define float @selectccogtf32(float, float, float, float) #0 {
+define float @selectccsgti128(i128, i128, float, float) {
+; CHECK-LABEL: selectccsgti128:
+; CHECK:       .LBB{{[0-9]+}}_2:
+; CHECK-NEXT:    # kill: def $sf5 killed $sf5 def $sx5
+; CHECK-NEXT:    # kill: def $sf4 killed $sf4 def $sx4
+; CHECK-NEXT:    or %s34, 0, (0)1
+; CHECK-NEXT:    cmps.l %s35, %s1, %s3
+; CHECK-NEXT:    or %s36, 0, %s34
+; CHECK-NEXT:    cmov.l.gt %s36, (63)0, %s35
+; CHECK-NEXT:    cmpu.l %s37, %s0, %s2
+; CHECK-NEXT:    cmov.l.gt %s34, (63)0, %s37
+; CHECK-NEXT:    cmov.l.eq %s36, %s34, %s35
+; CHECK-NEXT:    or %s34, 0, (0)1
+; CHECK-NEXT:    cmps.w.sx %s34, %s36, %s34
+; CHECK-NEXT:    cmov.w.ne %s5, %s4, %s34
+; CHECK-NEXT:    or %s0, 0, %s5
+; CHECK-NEXT:    or %s11, 0, %s9
+  %5 = icmp sgt i128 %0, %1
+  %6 = select i1 %5, float %2, float %3
+  ret float %6
+}
+
+define float @selectccogtf32(float, float, float, float) {
 ; CHECK-LABEL: selectccogtf32:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    # kill: def $sf3 killed $sf3 def $sx3
@@ -78,7 +100,7 @@ define float @selectccogtf32(float, float, float, float) #0 {
   ret float %6
 }
 
-define float @selectccogtf64(double, double, float, float) #0 {
+define float @selectccogtf64(double, double, float, float) {
 ; CHECK-LABEL: selectccogtf64:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    # kill: def $sf3 killed $sf3 def $sx3

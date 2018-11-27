@@ -38,7 +38,6 @@ class LandingPadInst;
 class LLVMContext;
 class Module;
 class PHINode;
-class TerminatorInst;
 class ValueSymbolTable;
 
 /// LLVM Basic Block Representation
@@ -50,12 +49,12 @@ class ValueSymbolTable;
 /// represents a label to which a branch can jump.
 ///
 /// A well formed basic block is formed of a list of non-terminating
-/// instructions followed by a single TerminatorInst instruction.
-/// TerminatorInst's may not occur in the middle of basic blocks, and must
-/// terminate the blocks. The BasicBlock class allows malformed basic blocks to
-/// occur because it may be useful in the intermediate stage of constructing or
-/// modifying a program. However, the verifier will ensure that basic blocks
-/// are "well formed".
+/// instructions followed by a single terminator instruction. Terminator
+/// instructions may not occur in the middle of basic blocks, and must terminate
+/// the blocks. The BasicBlock class allows malformed basic blocks to occur
+/// because it may be useful in the intermediate stage of constructing or
+/// modifying a program. However, the verifier will ensure that basic blocks are
+/// "well formed".
 class BasicBlock final : public Value, // Basic blocks are data objects also
                          public ilist_node_with_parent<BasicBlock, Function> {
 public:
@@ -120,10 +119,10 @@ public:
 
   /// Returns the terminator instruction if the block is well formed or null
   /// if the block is not well formed.
-  const TerminatorInst *getTerminator() const LLVM_READONLY;
-  TerminatorInst *getTerminator() {
-    return const_cast<TerminatorInst *>(
-                        static_cast<const BasicBlock *>(this)->getTerminator());
+  const Instruction *getTerminator() const LLVM_READONLY;
+  Instruction *getTerminator() {
+    return const_cast<Instruction *>(
+        static_cast<const BasicBlock *>(this)->getTerminator());
   }
 
   /// Returns the call instruction calling \@llvm.experimental.deoptimize
@@ -432,6 +431,10 @@ private:
 
 // Create wrappers for C Binding types (see CBindingWrapping.h).
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(BasicBlock, LLVMBasicBlockRef)
+
+/// Advance \p It while it points to a debug instruction and return the result.
+/// This assumes that \p It is not at the end of a block.
+BasicBlock::iterator skipDebugIntrinsics(BasicBlock::iterator It);
 
 } // end namespace llvm
 

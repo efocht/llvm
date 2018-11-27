@@ -1,11 +1,7 @@
 ; RUN: llc < %s -mtriple=ve-unknown-unknown | FileCheck %s
-; ModuleID = 'gen/tests/vfmind_vsvmv.c'
-source_filename = "gen/tests/vfmind_vsvmv.c"
-target datalayout = "e-m:e-i64:64-n32:64-S64-v16384:64:64"
-target triple = "ve"
 
 ; Function Attrs: nounwind
-define dso_local void @vfmind_vsvmv(double* %pvx, double %sy, double* %pvz, i32* %pvm, double* nocapture readnone %pvd, i32 %n) local_unnamed_addr #0 {
+define void @vfmind_vsvmv(double* %pvx, double %sy, double* %pvz, i32* %pvm, double* nocapture readnone %pvd, i32 %n) {
 ; CHECK-LABEL: vfmind_vsvmv
 ; CHECK: .LBB0_2
 ; CHECK: 	vfmin.d %v2,%s1,%v0,%vm1
@@ -29,7 +25,7 @@ for.body:                                         ; preds = %entry, %for.body
   %1 = tail call <256 x double> @llvm.ve.vld.vss(i64 8, i8* %0)
   %2 = bitcast i32* %pvm.addr.023 to i8*
   %3 = tail call <256 x double> @llvm.ve.vldlzx.vss(i64 4, i8* %2)
-  %4 = tail call <4 x i64> @llvm.ve.vfmkw.mcv(i32 1, <256 x double> %3)
+  %4 = tail call <4 x i64> @llvm.ve.vfmkw.mcv(i32 7, <256 x double> %3)
   %5 = bitcast double* %pvx.addr.025 to i8*
   %6 = tail call <256 x double> @llvm.ve.vld.vss(i64 8, i8* %5)
   %7 = tail call <256 x double> @llvm.ve.vfmind.vsvmv(double %sy, <256 x double> %1, <4 x i64> %4, <256 x double> %6)
@@ -43,31 +39,20 @@ for.body:                                         ; preds = %entry, %for.body
 }
 
 ; Function Attrs: nounwind
-declare void @llvm.ve.lvl(i32) #1
+declare void @llvm.ve.lvl(i32)
 
 ; Function Attrs: nounwind readonly
-declare <256 x double> @llvm.ve.vld.vss(i64, i8*) #2
+declare <256 x double> @llvm.ve.vld.vss(i64, i8*)
 
 ; Function Attrs: nounwind readonly
-declare <256 x double> @llvm.ve.vldlzx.vss(i64, i8*) #2
+declare <256 x double> @llvm.ve.vldlzx.vss(i64, i8*)
 
 ; Function Attrs: nounwind readnone
-declare <4 x i64> @llvm.ve.vfmkw.mcv(i32, <256 x double>) #3
+declare <4 x i64> @llvm.ve.vfmkw.mcv(i32, <256 x double>)
 
 ; Function Attrs: nounwind readnone
-declare <256 x double> @llvm.ve.vfmind.vsvmv(double, <256 x double>, <4 x i64>, <256 x double>) #3
+declare <256 x double> @llvm.ve.vfmind.vsvmv(double, <256 x double>, <4 x i64>, <256 x double>)
 
 ; Function Attrs: nounwind writeonly
-declare void @llvm.ve.vst.vss(<256 x double>, i64, i8*) #4
+declare void @llvm.ve.vst.vss(<256 x double>, i64, i8*)
 
-attributes #0 = { nounwind "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "no-frame-pointer-elim"="true" "no-frame-pointer-elim-non-leaf" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "unsafe-fp-math"="false" "use-soft-float"="false" }
-attributes #1 = { nounwind }
-attributes #2 = { nounwind readonly }
-attributes #3 = { nounwind readnone }
-attributes #4 = { nounwind writeonly }
-
-!llvm.module.flags = !{!0}
-!llvm.ident = !{!1}
-
-!0 = !{i32 1, !"wchar_size", i32 4}
-!1 = !{!"clang version 7.0.0 (git@socsv218.svp.cl.nec.co.jp:ve-llvm/clang.git 75fd1a3a6a07de8889d08fb9dd1eb1c0940e62a5) (llvm/llvm.git 882a992d251d96ec3ff0729ba24e71b2e10b6eda)"}

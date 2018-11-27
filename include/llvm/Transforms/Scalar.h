@@ -26,7 +26,6 @@ class ModulePass;
 class Pass;
 class GetElementPtrInst;
 class PassInfo;
-class TerminatorInst;
 class TargetLowering;
 class TargetMachine;
 
@@ -189,6 +188,12 @@ Pass *createLoopUnrollPass(int OptLevel = 2, int Threshold = -1, int Count = -1,
                            int UpperBound = -1, int AllowPeeling = -1);
 // Create an unrolling pass for full unrolling that uses exact trip count only.
 Pass *createSimpleLoopUnrollPass(int OptLevel = 2);
+
+//===----------------------------------------------------------------------===//
+//
+// LoopUnrollAndJam - This pass is a simple loop unroll and jam pass.
+//
+Pass *createLoopUnrollAndJamPass(int OptLevel = 2);
 
 //===----------------------------------------------------------------------===//
 //

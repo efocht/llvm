@@ -133,7 +133,8 @@ void X86LegalizerInfo::setLegalizerInfo32bit() {
     getActionDefinitionsBuilder(G_INTTOPTR).legalFor({{p0, s32}});
 
     // Shifts and SDIV
-    getActionDefinitionsBuilder({G_SHL, G_LSHR, G_ASHR, G_SDIV})
+    getActionDefinitionsBuilder(
+        {G_SHL, G_LSHR, G_ASHR, G_SDIV, G_SREM, G_UDIV, G_UREM})
         .legalFor({s8, s16, s32})
         .clampScalar(0, s8, s32);
   }
@@ -212,13 +213,34 @@ void X86LegalizerInfo::setLegalizerInfo64bit() {
     setAction({extOp, s64}, Legal);
   }
 
+  getActionDefinitionsBuilder(G_SITOFP)
+    .legalForCartesianProduct({s32, s64})
+      .clampScalar(1, s32, s64)
+      .widenScalarToNextPow2(1)
+      .clampScalar(0, s32, s64)
+      .widenScalarToNextPow2(0);
+
+  getActionDefinitionsBuilder(G_FPTOSI)
+      .legalForCartesianProduct({s32, s64})
+      .clampScalar(1, s32, s64)
+      .widenScalarToNextPow2(0)
+      .clampScalar(0, s32, s64)
+      .widenScalarToNextPow2(1);
+
   // Comparison
   setAction({G_ICMP, 1, s64}, Legal);
 
+  getActionDefinitionsBuilder(G_FCMP)
+      .legalForCartesianProduct({s8}, {s32, s64})
+      .clampScalar(0, s8, s8)
+      .clampScalar(1, s32, s64)
+      .widenScalarToNextPow2(1);
+
   // Shifts and SDIV
-  getActionDefinitionsBuilder({G_SHL, G_LSHR, G_ASHR, G_SDIV})
-    .legalFor({s8, s16, s32, s64})
-    .clampScalar(0, s8, s64);
+  getActionDefinitionsBuilder(
+      {G_SHL, G_LSHR, G_ASHR, G_SDIV, G_SREM, G_UDIV, G_UREM})
+      .legalFor({s8, s16, s32, s64})
+      .clampScalar(0, s8, s64);
 
   // Merge/Unmerge
   setAction({G_MERGE_VALUES, s128}, Legal);
@@ -284,6 +306,9 @@ void X86LegalizerInfo::setLegalizerInfoSSE2() {
 
   setAction({G_FPEXT, s64}, Legal);
   setAction({G_FPEXT, 1, s32}, Legal);
+
+  setAction({G_FPTRUNC, s32}, Legal);
+  setAction({G_FPTRUNC, 1, s64}, Legal);
 
   // Constants
   setAction({TargetOpcode::G_FCONSTANT, s64}, Legal);

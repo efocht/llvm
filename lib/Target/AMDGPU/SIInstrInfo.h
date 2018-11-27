@@ -31,18 +31,22 @@
 #include <cassert>
 #include <cstdint>
 
+#define GET_INSTRINFO_HEADER
+#include "AMDGPUGenInstrInfo.inc"
+
 namespace llvm {
 
 class APInt;
+class MachineDominatorTree;
 class MachineRegisterInfo;
 class RegScavenger;
-class SISubtarget;
+class GCNSubtarget;
 class TargetRegisterClass;
 
-class SIInstrInfo final : public AMDGPUInstrInfo {
+class SIInstrInfo final : public AMDGPUGenInstrInfo {
 private:
   const SIRegisterInfo RI;
-  const SISubtarget &ST;
+  const GCNSubtarget &ST;
 
   // The inverse predicate should have the negative value.
   enum BranchPredicate {
@@ -76,8 +80,8 @@ public:
 private:
   void swapOperands(MachineInstr &Inst) const;
 
-  bool moveScalarAddSub(SetVectorType &Worklist,
-                        MachineInstr &Inst) const;
+  bool moveScalarAddSub(SetVectorType &Worklist, MachineInstr &Inst,
+                        MachineDominatorTree *MDT = nullptr) const;
 
   void lowerScalarAbs(SetVectorType &Worklist,
                       MachineInstr &Inst) const;
@@ -88,16 +92,19 @@ private:
   void splitScalar64BitUnaryOp(SetVectorType &Worklist,
                                MachineInstr &Inst, unsigned Opcode) const;
 
-  void splitScalar64BitAddSub(SetVectorType &Worklist,
-                              MachineInstr &Inst) const;
+  void splitScalar64BitAddSub(SetVectorType &Worklist, MachineInstr &Inst,
+                              MachineDominatorTree *MDT = nullptr) const;
 
-  void splitScalar64BitBinaryOp(SetVectorType &Worklist,
-                                MachineInstr &Inst, unsigned Opcode) const;
+  void splitScalar64BitBinaryOp(SetVectorType &Worklist, MachineInstr &Inst,
+                                unsigned Opcode,
+                                MachineDominatorTree *MDT = nullptr) const;
 
   void splitScalar64BitBCNT(SetVectorType &Worklist,
                             MachineInstr &Inst) const;
   void splitScalar64BitBFE(SetVectorType &Worklist,
                            MachineInstr &Inst) const;
+  void splitScalarBuffer(SetVectorType &Worklist,
+                         MachineInstr &Inst) const;
   void movePackToVALU(SetVectorType &Worklist,
                       MachineRegisterInfo &MRI,
                       MachineInstr &Inst) const;
@@ -144,7 +151,7 @@ public:
     MO_REL32_HI = 5
   };
 
-  explicit SIInstrInfo(const SISubtarget &ST);
+  explicit SIInstrInfo(const GCNSubtarget &ST);
 
   const SIRegisterInfo &getRegisterInfo() const {
     return RI;
@@ -163,7 +170,10 @@ public:
 
   bool shouldClusterMemOps(MachineInstr &FirstLdSt, unsigned BaseReg1,
                            MachineInstr &SecondLdSt, unsigned BaseReg2,
-                           unsigned NumLoads) const final;
+                           unsigned NumLoads) const override;
+
+  bool shouldScheduleLoadsNear(SDNode *Load0, SDNode *Load1, int64_t Offset0,
+                               int64_t Offset1, unsigned NumLoads) const override;
 
   void copyPhysReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
                    const DebugLoc &DL, unsigned DestReg, unsigned SrcReg,
@@ -219,6 +229,9 @@ public:
   bool findCommutedOpIndices(MachineInstr &MI, unsigned &SrcOpIdx1,
                              unsigned &SrcOpIdx2) const override;
 
+  bool findCommutedOpIndices(MCInstrDesc Desc, unsigned & SrcOpIdx0,
+   unsigned & SrcOpIdx1) const;
+
   bool isBranchOffsetInRange(unsigned BranchOpc,
                              int64_t BrOffset) const override;
 
@@ -270,7 +283,7 @@ public:
                           unsigned TrueReg, unsigned FalseReg) const;
 
   unsigned getAddressSpaceForPseudoSourceKind(
-             PseudoSourceValue::PSVKind Kind) const override;
+             unsigned Kind) const override;
 
   bool
   areMemAccessesTriviallyDisjoint(MachineInstr &MIa, MachineInstr &MIb,
@@ -445,14 +458,6 @@ public:
     return get(Opcode).TSFlags & SIInstrFlags::Gather4;
   }
 
-  static bool isD16(const MachineInstr &MI) {
-    return MI.getDesc().TSFlags & SIInstrFlags::D16;
-  }
-
-  bool isD16(uint16_t Opcode) const {
-    return get(Opcode).TSFlags & SIInstrFlags::D16;
-  }
-
   static bool isFLAT(const MachineInstr &MI) {
     return MI.getDesc().TSFlags & SIInstrFlags::FLAT;
   }
@@ -599,6 +604,9 @@ public:
     return !RI.isSGPRReg(MRI, Dest);
   }
 
+  /// Whether we must prevent this instruction from executing with EXEC = 0.
+  bool hasUnwantedEffectsWhenEXECEmpty(const MachineInstr &MI) const;
+
   bool isInlineConstant(const APInt &Imm) const;
 
   bool isInlineConstant(const MachineOperand &MO, uint8_t OperandType) const;
@@ -688,6 +696,12 @@ public:
                        unsigned OpName) const;
   bool hasAnyModifiersSet(const MachineInstr &MI) const;
 
+  bool canShrink(const MachineInstr &MI,
+                 const MachineRegisterInfo &MRI) const;
+
+  MachineInstr *buildShrunkInst(MachineInstr &MI,
+                                unsigned NewOpcode) const;
+
   bool verifyInstruction(const MachineInstr &MI,
                          StringRef &ErrInfo) const override;
 
@@ -718,6 +732,16 @@ public:
   /// This form should usually be preferred since it handles operands
   /// with unknown register classes.
   unsigned getOpSize(const MachineInstr &MI, unsigned OpNo) const {
+    const MachineOperand &MO = MI.getOperand(OpNo);
+    if (MO.isReg()) {
+      if (unsigned SubReg = MO.getSubReg()) {
+        assert(RI.getRegSizeInBits(*RI.getSubClassWithSubReg(
+                                   MI.getParent()->getParent()->getRegInfo().
+                                     getRegClass(MO.getReg()), SubReg)) >= 32 &&
+               "Sub-dword subregs are not supported");
+        return RI.getSubRegIndexLaneMask(SubReg).getNumLanes() * 4;
+      }
+    }
     return RI.getRegSizeInBits(*getOpRegClass(MI, OpNo)) / 8;
   }
 
@@ -776,14 +800,16 @@ public:
                               MachineOperand &Op, MachineRegisterInfo &MRI,
                               const DebugLoc &DL) const;
 
-  /// Legalize all operands in this instruction.  This function may
-  /// create new instruction and insert them before \p MI.
-  void legalizeOperands(MachineInstr &MI) const;
+  /// Legalize all operands in this instruction.  This function may create new
+  /// instructions and control-flow around \p MI.  If present, \p MDT is
+  /// updated.
+  void legalizeOperands(MachineInstr &MI,
+                        MachineDominatorTree *MDT = nullptr) const;
 
   /// Replace this instruction's opcode with the equivalent VALU
   /// opcode.  This function will also move the users of \p MI to the
-  /// VALU if necessary.
-  void moveToVALU(MachineInstr &MI) const;
+  /// VALU if necessary. If present, \p MDT is updated.
+  void moveToVALU(MachineInstr &MI, MachineDominatorTree *MDT = nullptr) const;
 
   void insertWaitStates(MachineBasicBlock &MBB,MachineBasicBlock::iterator MI,
                         int Count) const;
@@ -879,6 +905,12 @@ public:
   static bool isLegalMUBUFImmOffset(unsigned Imm) {
     return isUInt<12>(Imm);
   }
+
+  /// \brief Return a target-specific opcode if Opcode is a pseudo instruction.
+  /// Return -1 if the target-specific opcode for the pseudo instruction does
+  /// not exist. If Opcode is not a pseudo instruction, this is identity.
+  int pseudoToMCOpcode(int Opcode) const;
+
 };
 
 namespace AMDGPU {
@@ -903,6 +935,12 @@ namespace AMDGPU {
 
   LLVM_READONLY
   int getAddr64Inst(uint16_t Opcode);
+
+  /// Check if \p Opcode is an Addr64 opcode.
+  ///
+  /// \returns \p Opcode if it is an Addr64 opcode, otherwise -1.
+  LLVM_READONLY
+  int getIfAddr64Inst(uint16_t Opcode);
 
   LLVM_READONLY
   int getMUBUFNoLdsInst(uint16_t Opcode);

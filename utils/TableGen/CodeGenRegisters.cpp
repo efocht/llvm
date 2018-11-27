@@ -388,13 +388,17 @@ CodeGenRegister::computeSubRegs(CodeGenRegBank &RegBank) {
   // user already specified.
   for (unsigned i = 0, e = ExplicitSubRegs.size(); i != e; ++i) {
     CodeGenRegister *SR = ExplicitSubRegs[i];
-    if (!SR->CoveredBySubRegs || SR->ExplicitSubRegs.size() <= 1)
+    if (!SR->CoveredBySubRegs || SR->ExplicitSubRegs.size() <= 1 ||
+        SR->Artificial)
       continue;
 
     // SR is composed of multiple sub-regs. Find their names in this register.
     SmallVector<CodeGenSubRegIndex*, 8> Parts;
-    for (unsigned j = 0, e = SR->ExplicitSubRegs.size(); j != e; ++j)
-      Parts.push_back(getSubRegIndex(SR->ExplicitSubRegs[j]));
+    for (unsigned j = 0, e = SR->ExplicitSubRegs.size(); j != e; ++j) {
+      CodeGenSubRegIndex &I = *SR->ExplicitSubRegIndices[j];
+      if (!I.Artificial)
+        Parts.push_back(getSubRegIndex(SR->ExplicitSubRegs[j]));
+    }
 
     // Offer this as an existing spelling for the concatenation of Parts.
     CodeGenSubRegIndex &Idx = *ExplicitSubRegIndices[i];
@@ -721,7 +725,7 @@ struct TupleExpander : SetTheory::Expander {
 //===----------------------------------------------------------------------===//
 
 static void sortAndUniqueRegisters(CodeGenRegister::Vec &M) {
-  llvm::sort(M.begin(), M.end(), deref<llvm::less>());
+  llvm::sort(M, deref<llvm::less>());
   M.erase(std::unique(M.begin(), M.end(), deref<llvm::equal>()), M.end());
 }
 
@@ -993,7 +997,7 @@ CodeGenRegisterClass::getMatchingSubClassWithSubRegs(
   for (auto &RC : RegClasses)
     if (SuperRegRCsBV[RC.EnumValue])
       SuperRegRCs.emplace_back(&RC);
-  llvm::sort(SuperRegRCs.begin(), SuperRegRCs.end(), SizeOrder);
+  llvm::sort(SuperRegRCs, SizeOrder);
   assert(SuperRegRCs.front() == BiggestSuperRegRC && "Biggest class wasn't first");
 
   // Find all the subreg classes and order them by size too.
@@ -1004,7 +1008,7 @@ CodeGenRegisterClass::getMatchingSubClassWithSubRegs(
     if (SuperRegClassesBV.any())
       SuperRegClasses.push_back(std::make_pair(&RC, SuperRegClassesBV));
   }
-  llvm::sort(SuperRegClasses.begin(), SuperRegClasses.end(),
+  llvm::sort(SuperRegClasses,
              [&](const std::pair<CodeGenRegisterClass *, BitVector> &A,
                  const std::pair<CodeGenRegisterClass *, BitVector> &B) {
                return SizeOrder(A.first, B.first);
@@ -1069,7 +1073,7 @@ void CodeGenRegisterClass::buildRegUnitSet(const CodeGenRegBank &RegBank,
     if (!RU.Artificial)
       TmpUnits.push_back(*UnitI);
   }
-  llvm::sort(TmpUnits.begin(), TmpUnits.end());
+  llvm::sort(TmpUnits);
   std::unique_copy(TmpUnits.begin(), TmpUnits.end(),
                    std::back_inserter(RegUnits));
 }
@@ -1089,7 +1093,7 @@ CodeGenRegBank::CodeGenRegBank(RecordKeeper &Records,
   // Read in the user-defined (named) sub-register indices.
   // More indices will be synthesized later.
   std::vector<Record*> SRIs = Records.getAllDerivedDefinitions("SubRegIndex");
-  llvm::sort(SRIs.begin(), SRIs.end(), LessRecord());
+  llvm::sort(SRIs, LessRecord());
   for (unsigned i = 0, e = SRIs.size(); i != e; ++i)
     getSubRegIdx(SRIs[i]);
   // Build composite maps from ComposedOf fields.
@@ -1098,7 +1102,7 @@ CodeGenRegBank::CodeGenRegBank(RecordKeeper &Records,
 
   // Read in the register definitions.
   std::vector<Record*> Regs = Records.getAllDerivedDefinitions("Register");
-  llvm::sort(Regs.begin(), Regs.end(), LessRecordRegister());
+  llvm::sort(Regs, LessRecordRegister());
   // Assign the enumeration values.
   for (unsigned i = 0, e = Regs.size(); i != e; ++i)
     getReg(Regs[i]);
@@ -1109,7 +1113,7 @@ CodeGenRegBank::CodeGenRegBank(RecordKeeper &Records,
 
   for (Record *R : Tups) {
     std::vector<Record *> TupRegs = *Sets.expand(R);
-    llvm::sort(TupRegs.begin(), TupRegs.end(), LessRecordRegister());
+    llvm::sort(TupRegs, LessRecordRegister());
     for (Record *RC : TupRegs)
       getReg(RC);
   }
@@ -2180,6 +2184,8 @@ void CodeGenRegBank::inferMatchingSuperRegClass(CodeGenRegisterClass *RC,
     for (auto I = FirstSubRegRC, E = std::prev(RegClasses.end());
          I != std::next(E); ++I) {
       CodeGenRegisterClass &SubRC = *I;
+      if (SubRC.Artificial)
+        continue;
       // Topological shortcut: SubRC members have the wrong shape.
       if (!TopoSigs.anyCommon(SubRC.getTopoSigs()))
         continue;

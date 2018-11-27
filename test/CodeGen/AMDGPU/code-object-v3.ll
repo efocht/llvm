@@ -2,14 +2,40 @@
 ; RUN: llc -filetype=obj -mtriple=amdgcn-amd-amdhsa -mcpu=gfx803 -mattr=+code-object-v3 < %s | llvm-readobj -elf-output-style=GNU -notes -relocations -sections -symbols | FileCheck --check-prefixes=ALL-ELF,OSABI-AMDHSA-ELF %s
 
 ; ALL-ASM-LABEL: {{^}}fadd:
+
+; OSABI-AMDHSA-ASM-NOT: .amdgpu_hsa_kernel
+; OSABI-AMDHSA-ASM-NOT: .amd_kernel_code_t
+
 ; OSABI-AMDHSA-ASM: s_endpgm
 ; OSABI-AMDHSA-ASM: .section .rodata,#alloc
 ; OSABI-AMDHSA-ASM: .p2align 6
+; OSABI-AMDHSA-ASM: .amdhsa_kernel fadd
+; OSABI-AMDHSA-ASM:     .amdhsa_user_sgpr_private_segment_buffer 1
+; OSABI-AMDHSA-ASM:     .amdhsa_user_sgpr_kernarg_segment_ptr 1
+; OSABI-AMDHSA-ASM:     .amdhsa_next_free_vgpr 3
+; OSABI-AMDHSA-ASM:     .amdhsa_next_free_sgpr 8
+; OSABI-AMDHSA-ASM:     .amdhsa_reserve_vcc 0
+; OSABI-AMDHSA-ASM:     .amdhsa_reserve_flat_scratch 0
+; OSABI-AMDHSA-ASM: .end_amdhsa_kernel
+; OSABI-AMDHSA-ASM: .text
 
 ; ALL-ASM-LABEL: {{^}}fsub:
+
+; OSABI-AMDHSA-ASM-NOT: .amdgpu_hsa_kernel
+; OSABI-AMDHSA-ASM-NOT: .amd_kernel_code_t
+
 ; OSABI-AMDHSA-ASM: s_endpgm
 ; OSABI-AMDHSA-ASM: .section .rodata,#alloc
 ; OSABI-AMDHSA-ASM: .p2align 6
+; OSABI-AMDHSA-ASM: .amdhsa_kernel fsub
+; OSABI-AMDHSA-ASM:     .amdhsa_user_sgpr_private_segment_buffer 1
+; OSABI-AMDHSA-ASM:     .amdhsa_user_sgpr_kernarg_segment_ptr 1
+; OSABI-AMDHSA-ASM:     .amdhsa_next_free_vgpr 3
+; OSABI-AMDHSA-ASM:     .amdhsa_next_free_sgpr 8
+; OSABI-AMDHSA-ASM:     .amdhsa_reserve_vcc 0
+; OSABI-AMDHSA-ASM:     .amdhsa_reserve_flat_scratch 0
+; OSABI-AMDHSA-ASM: .end_amdhsa_kernel
+; OSABI-AMDHSA-ASM: .text
 
 ; OSABI-AMDHSA-ASM-NOT: .hsa_code_object_version
 ; OSABI-AMDHSA-ASM-NOT: .hsa_code_object_isa

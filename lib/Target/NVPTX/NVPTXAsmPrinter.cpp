@@ -199,7 +199,7 @@ bool NVPTXAsmPrinter::lowerImageHandleOperand(const MachineInstr *MI,
 
 void NVPTXAsmPrinter::lowerImageHandleSymbol(unsigned Index, MCOperand &MCOp) {
   // Ewwww
-  TargetMachine &TM = const_cast<TargetMachine&>(MF->getTarget());
+  LLVMTargetMachine &TM = const_cast<LLVMTargetMachine&>(MF->getTarget());
   NVPTXTargetMachine &nvTM = static_cast<NVPTXTargetMachine&>(TM);
   const NVPTXMachineFunctionInfo *MFI = MF->getInfo<NVPTXMachineFunctionInfo>();
   const char *Sym = MFI->getImageHandleSymbol(Index);
@@ -493,6 +493,12 @@ void NVPTXAsmPrinter::EmitFunctionBodyStart() {
 
 void NVPTXAsmPrinter::EmitFunctionBodyEnd() {
   VRegMapping.clear();
+}
+
+const MCSymbol *NVPTXAsmPrinter::getFunctionFrameSymbol() const {
+    SmallString<128> Str;
+    raw_svector_ostream(Str) << DEPOTNAME << getFunctionNumber();
+    return OutContext.getOrCreateSymbol(Str);
 }
 
 void NVPTXAsmPrinter::emitImplicitDef(const MachineInstr *MI) const {
@@ -1337,7 +1343,7 @@ void NVPTXAsmPrinter::emitPTXGlobalVariable(const GlobalVariable *GVar,
     return;
   }
 
-  if (ETy->isFloatingPointTy() || ETy->isIntegerTy() || ETy->isPointerTy()) {
+  if (ETy->isFloatingPointTy() || ETy->isIntOrPtrTy()) {
     O << " .";
     O << getPTXFundamentalTypeStr(ETy);
     O << " ";

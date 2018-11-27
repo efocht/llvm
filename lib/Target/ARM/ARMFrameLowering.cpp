@@ -372,7 +372,7 @@ void ARMFrameLowering::emitPrologue(MachineFunction &MF,
   // Debug location must be unknown since the first debug location is used
   // to determine the end of the prologue.
   DebugLoc dl;
-  
+
   unsigned FramePtr = RegInfo->getFrameRegister(MF);
 
   // Determine the sizes of each callee-save spill areas and record which frame
@@ -526,6 +526,8 @@ void ARMFrameLowering::emitPrologue(MachineFunction &MF,
         .setMIFlags(MachineInstr::FrameSetup);
 
     switch (TM.getCodeModel()) {
+    case CodeModel::Tiny:
+      llvm_unreachable("Tiny code model not available on ARM.");
     case CodeModel::Small:
     case CodeModel::Medium:
     case CodeModel::Kernel:
@@ -1006,8 +1008,7 @@ void ARMFrameLowering::emitPushInst(MachineBasicBlock &MBB,
     if (Regs.empty())
       continue;
 
-    llvm::sort(Regs.begin(), Regs.end(), [&](const RegAndKill &LHS,
-                                             const RegAndKill &RHS) {
+    llvm::sort(Regs, [&](const RegAndKill &LHS, const RegAndKill &RHS) {
       return TRI.getEncodingValue(LHS.first) < TRI.getEncodingValue(RHS.first);
     });
 
@@ -1103,7 +1104,7 @@ void ARMFrameLowering::emitPopInst(MachineBasicBlock &MBB,
     if (Regs.empty())
       continue;
 
-    llvm::sort(Regs.begin(), Regs.end(), [&](unsigned LHS, unsigned RHS) {
+    llvm::sort(Regs, [&](unsigned LHS, unsigned RHS) {
       return TRI.getEncodingValue(LHS) < TRI.getEncodingValue(RHS);
     });
 
@@ -1514,6 +1515,7 @@ static unsigned estimateRSStackSizeLimit(MachineFunction &MF,
           break;
         case ARMII::AddrMode5:
         case ARMII::AddrModeT2_i8s4:
+        case ARMII::AddrModeT2_ldrex:
           Limit = std::min(Limit, ((1U << 8) - 1) * 4);
           break;
         case ARMII::AddrModeT2_i12:
@@ -1920,9 +1922,13 @@ void ARMFrameLowering::determineCalleeSaves(MachineFunction &MF,
                         << "\n");
     }
 
+    // Avoid spilling LR in Thumb1 if there's a tail call: it's expensive to
+    // restore LR in that case.
+    bool ExpensiveLRRestore = AFI->isThumb1OnlyFunction() && MFI.hasTailCall();
+
     // If LR is not spilled, but at least one of R4, R5, R6, and R7 is spilled.
     // Spill LR as well so we can fold BX_RET to the registers restore (LDM).
-    if (!LRSpilled && CS1Spilled) {
+    if (!LRSpilled && CS1Spilled && !ExpensiveLRRestore) {
       SavedRegs.set(ARM::LR);
       NumGPRSpills++;
       SmallVectorImpl<unsigned>::iterator LRPos;
@@ -1948,7 +1954,8 @@ void ARMFrameLowering::determineCalleeSaves(MachineFunction &MF,
           // Windows on ARM, accept R11 (frame pointer)
           if (!AFI->isThumbFunction() ||
               (STI.isTargetWindows() && Reg == ARM::R11) ||
-              isARMLowRegister(Reg) || Reg == ARM::LR) {
+              isARMLowRegister(Reg) ||
+              (Reg == ARM::LR && !ExpensiveLRRestore)) {
             SavedRegs.set(Reg);
             LLVM_DEBUG(dbgs() << "Spilling " << printReg(Reg, TRI)
                               << " to make up alignment\n");
@@ -2148,8 +2155,10 @@ void ARMFrameLowering::adjustForSegmentedStacks(
 
   uint64_t StackSize = MFI.getStackSize();
 
-  // Do not generate a prologue for functions with a stack of size zero
-  if (StackSize == 0)
+  // Do not generate a prologue for leaf functions with a stack of size zero.
+  // For non-leaf functions we have to allow for the possibility that the
+  // call is to a non-split function, as in PR37807.
+  if (StackSize == 0 && !MFI.hasTailCall())
     return;
 
   // Use R4 and R5 as scratch registers.

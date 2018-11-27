@@ -490,7 +490,7 @@ static unsigned getBranchHint(unsigned PCC, FunctionLoweringInfo *FuncInfo,
   if (!FuncInfo->BPI) return PPC::BR_NO_HINT;
 
   const BasicBlock *BB = FuncInfo->MBB->getBasicBlock();
-  const TerminatorInst *BBTerm = BB->getTerminator();
+  const Instruction *BBTerm = BB->getTerminator();
 
   if (BBTerm->getNumSuccessors() != 2) return PPC::BR_NO_HINT;
 
@@ -1083,9 +1083,14 @@ class BitPermutationSelector {
     // lowest-order bit.
     unsigned Idx;
 
+    // ConstZero means a bit we need to mask off.
+    // Variable is a bit comes from an input variable.
+    // VariableKnownToBeZero is also a bit comes from an input variable,
+    // but it is known to be already zero. So we do not need to mask them.
     enum Kind {
       ConstZero,
-      Variable
+      Variable,
+      VariableKnownToBeZero
     } K;
 
     ValueBit(SDValue V, unsigned I, Kind K = Variable)
@@ -1094,11 +1099,11 @@ class BitPermutationSelector {
       : V(SDValue(nullptr, 0)), Idx(UINT32_MAX), K(K) {}
 
     bool isZero() const {
-      return K == ConstZero;
+      return K == ConstZero || K == VariableKnownToBeZero;
     }
 
     bool hasValue() const {
-      return K == Variable;
+      return K == Variable || K == VariableKnownToBeZero;
     }
 
     SDValue getValue() const {
@@ -1248,8 +1253,14 @@ class BitPermutationSelector {
         for (unsigned i = 0; i < NumBits; ++i)
           if (((Mask >> i) & 1) == 1)
             Bits[i] = (*LHSBits)[i];
-          else
-            Bits[i] = ValueBit(ValueBit::ConstZero);
+          else {
+            // AND instruction masks this bit. If the input is already zero,
+            // we have nothing to do here. Otherwise, make the bit ConstZero.
+            if ((*LHSBits)[i].isZero())
+              Bits[i] = (*LHSBits)[i];
+            else
+              Bits[i] = ValueBit(ValueBit::ConstZero);
+          }
 
         return std::make_pair(Interesting, &Bits);
       }
@@ -1259,8 +1270,26 @@ class BitPermutationSelector {
       const auto &RHSBits = *getValueBits(V.getOperand(1), NumBits).second;
 
       bool AllDisjoint = true;
-      for (unsigned i = 0; i < NumBits; ++i)
-        if (LHSBits[i].isZero())
+      SDValue LastVal = SDValue();
+      unsigned LastIdx = 0;
+      for (unsigned i = 0; i < NumBits; ++i) {
+        if (LHSBits[i].isZero() && RHSBits[i].isZero()) {
+          // If both inputs are known to be zero and one is ConstZero and
+          // another is VariableKnownToBeZero, we can select whichever
+          // we like. To minimize the number of bit groups, we select
+          // VariableKnownToBeZero if this bit is the next bit of the same
+          // input variable from the previous bit. Otherwise, we select
+          // ConstZero.
+          if (LHSBits[i].hasValue() && LHSBits[i].getValue() == LastVal &&
+              LHSBits[i].getValueBitIndex() == LastIdx + 1)
+            Bits[i] = LHSBits[i];
+          else if (RHSBits[i].hasValue() && RHSBits[i].getValue() == LastVal &&
+                   RHSBits[i].getValueBitIndex() == LastIdx + 1)
+            Bits[i] = RHSBits[i];
+          else
+            Bits[i] = ValueBit(ValueBit::ConstZero);
+        }
+        else if (LHSBits[i].isZero())
           Bits[i] = RHSBits[i];
         else if (RHSBits[i].isZero())
           Bits[i] = LHSBits[i];
@@ -1268,6 +1297,16 @@ class BitPermutationSelector {
           AllDisjoint = false;
           break;
         }
+        // We remember the value and bit index of this bit.
+        if (Bits[i].hasValue()) {
+          LastVal = Bits[i].getValue();
+          LastIdx = Bits[i].getValueBitIndex();
+        }
+        else {
+          if (LastVal) LastVal = SDValue();
+          LastIdx = 0;
+        }
+      }
 
       if (!AllDisjoint)
         break;
@@ -1293,6 +1332,44 @@ class BitPermutationSelector {
 
       return std::make_pair(Interesting, &Bits);
     }
+    case ISD::AssertZext: {
+      // For AssertZext, we look through the operand and
+      // mark the bits known to be zero.
+      const SmallVector<ValueBit, 64> *LHSBits;
+      std::tie(Interesting, LHSBits) = getValueBits(V.getOperand(0),
+                                                    NumBits);
+
+      EVT FromType = cast<VTSDNode>(V.getOperand(1))->getVT();
+      const unsigned NumValidBits = FromType.getSizeInBits();
+      for (unsigned i = 0; i < NumValidBits; ++i)
+        Bits[i] = (*LHSBits)[i];
+
+      // These bits are known to be zero.
+      for (unsigned i = NumValidBits; i < NumBits; ++i)
+        Bits[i] = ValueBit((*LHSBits)[i].getValue(),
+                           (*LHSBits)[i].getValueBitIndex(),
+                           ValueBit::VariableKnownToBeZero);
+
+      return std::make_pair(Interesting, &Bits);
+    }
+    case ISD::LOAD:
+      LoadSDNode *LD = cast<LoadSDNode>(V);
+      if (ISD::isZEXTLoad(V.getNode()) && V.getResNo() == 0) {
+        EVT VT = LD->getMemoryVT();
+        const unsigned NumValidBits = VT.getSizeInBits();
+
+        for (unsigned i = 0; i < NumValidBits; ++i)
+          Bits[i] = ValueBit(V, i);
+
+        // These bits are known to be zero.
+        for (unsigned i = NumValidBits; i < NumBits; ++i)
+          Bits[i] = ValueBit(V, i, ValueBit::VariableKnownToBeZero);
+
+        // Zero-extending load itself cannot be optimized. So, it is not
+        // interesting by itself though it gives useful information.
+        return std::make_pair(Interesting = false, &Bits);
+      }
+      break;
     }
 
     for (unsigned i = 0; i < NumBits; ++i)
@@ -1304,7 +1381,7 @@ class BitPermutationSelector {
   // For each value (except the constant ones), compute the left-rotate amount
   // to get it from its original to final position.
   void computeRotationAmounts() {
-    HasZeros = false;
+    NeedMask = false;
     RLAmt.resize(Bits.size());
     for (unsigned i = 0; i < Bits.size(); ++i)
       if (Bits[i].hasValue()) {
@@ -1314,7 +1391,7 @@ class BitPermutationSelector {
         else
           RLAmt[i] = Bits.size() - (VBI - i);
       } else if (Bits[i].isZero()) {
-        HasZeros = true;
+        NeedMask = true;
         RLAmt[i] = UINT32_MAX;
       } else {
         llvm_unreachable("Unknown value bit type");
@@ -1330,6 +1407,7 @@ class BitPermutationSelector {
     unsigned LastRLAmt = RLAmt[0];
     SDValue LastValue = Bits[0].hasValue() ? Bits[0].getValue() : SDValue();
     unsigned LastGroupStartIdx = 0;
+    bool IsGroupOfZeros = !Bits[LastGroupStartIdx].hasValue();
     for (unsigned i = 1; i < Bits.size(); ++i) {
       unsigned ThisRLAmt = RLAmt[i];
       SDValue ThisValue = Bits[i].hasValue() ? Bits[i].getValue() : SDValue();
@@ -1342,10 +1420,20 @@ class BitPermutationSelector {
           LastGroupStartIdx = 0;
       }
 
+      // If this bit is known to be zero and the current group is a bit group
+      // of zeros, we do not need to terminate the current bit group even the
+      // Value or RLAmt does not match here. Instead, we terminate this group
+      // when the first non-zero bit appears later.
+      if (IsGroupOfZeros && Bits[i].isZero())
+        continue;
+
       // If this bit has the same underlying value and the same rotate factor as
       // the last one, then they're part of the same group.
       if (ThisRLAmt == LastRLAmt && ThisValue == LastValue)
-        continue;
+        // We cannot continue the current group if this bits is not known to
+        // be zero in a bit group of zeros.
+        if (!(IsGroupOfZeros && ThisValue && !Bits[i].isZero()))
+          continue;
 
       if (LastValue.getNode())
         BitGroups.push_back(BitGroup(LastValue, LastRLAmt, LastGroupStartIdx,
@@ -1353,6 +1441,7 @@ class BitPermutationSelector {
       LastRLAmt = ThisRLAmt;
       LastValue = ThisValue;
       LastGroupStartIdx = i;
+      IsGroupOfZeros = !Bits[LastGroupStartIdx].hasValue();
     }
     if (LastValue.getNode())
       BitGroups.push_back(BitGroup(LastValue, LastRLAmt, LastGroupStartIdx,
@@ -1401,7 +1490,7 @@ class BitPermutationSelector {
     for (auto &I : ValueRots) {
       ValueRotsVec.push_back(I.second);
     }
-    llvm::sort(ValueRotsVec.begin(), ValueRotsVec.end());
+    llvm::sort(ValueRotsVec);
   }
 
   // In 64-bit mode, rlwinm and friends have a rotation operator that
@@ -1698,7 +1787,7 @@ class BitPermutationSelector {
     // If we've not yet selected a 'starting' instruction, and we have no zeros
     // to fill in, select the (Value, RLAmt) with the highest priority (largest
     // number of groups), and start with this rotated value.
-    if ((!HasZeros || LateMask) && !Res) {
+    if ((!NeedMask || LateMask) && !Res) {
       ValueRotInfo &VRI = ValueRotsVec[0];
       if (VRI.RLAmt) {
         if (InstCnt) *InstCnt += 1;
@@ -2077,7 +2166,7 @@ class BitPermutationSelector {
     // If we've not yet selected a 'starting' instruction, and we have no zeros
     // to fill in, select the (Value, RLAmt) with the highest priority (largest
     // number of groups), and start with this rotated value.
-    if ((!HasZeros || LateMask) && !Res) {
+    if ((!NeedMask || LateMask) && !Res) {
       // If we have both Repl32 groups and non-Repl32 groups, the non-Repl32
       // groups will come first, and so the VRI representing the largest number
       // of groups might not be first (it might be the first Repl32 groups).
@@ -2230,7 +2319,7 @@ class BitPermutationSelector {
 
   SmallVector<ValueBit, 64> Bits;
 
-  bool HasZeros;
+  bool NeedMask;
   SmallVector<unsigned, 64> RLAmt;
 
   SmallVector<BitGroup, 16> BitGroups;
@@ -2259,10 +2348,10 @@ public:
                          " selection for:    ");
     LLVM_DEBUG(N->dump(CurDAG));
 
-    // Fill it RLAmt and set HasZeros.
+    // Fill it RLAmt and set NeedMask.
     computeRotationAmounts();
 
-    if (!HasZeros)
+    if (!NeedMask)
       return Select(N, false);
 
     // We currently have two techniques for handling results with zeros: early
@@ -3616,10 +3705,63 @@ SDValue PPCDAGToDAGISel::SelectCC(SDValue LHS, SDValue RHS, ISD::CondCode CC,
       Opc = PPC::CMPD;
     }
   } else if (LHS.getValueType() == MVT::f32) {
-    Opc = PPC::FCMPUS;
+    if (PPCSubTarget->hasSPE()) {
+      switch (CC) {
+        default:
+        case ISD::SETEQ:
+        case ISD::SETNE:
+          Opc = PPC::EFSCMPEQ;
+          break;
+        case ISD::SETLT:
+        case ISD::SETGE:
+        case ISD::SETOLT:
+        case ISD::SETOGE:
+        case ISD::SETULT:
+        case ISD::SETUGE:
+          Opc = PPC::EFSCMPLT;
+          break;
+        case ISD::SETGT:
+        case ISD::SETLE:
+        case ISD::SETOGT:
+        case ISD::SETOLE:
+        case ISD::SETUGT:
+        case ISD::SETULE:
+          Opc = PPC::EFSCMPGT;
+          break;
+      }
+    } else
+      Opc = PPC::FCMPUS;
+  } else if (LHS.getValueType() == MVT::f64) {
+    if (PPCSubTarget->hasSPE()) {
+      switch (CC) {
+        default:
+        case ISD::SETEQ:
+        case ISD::SETNE:
+          Opc = PPC::EFDCMPEQ;
+          break;
+        case ISD::SETLT:
+        case ISD::SETGE:
+        case ISD::SETOLT:
+        case ISD::SETOGE:
+        case ISD::SETULT:
+        case ISD::SETUGE:
+          Opc = PPC::EFDCMPLT;
+          break;
+        case ISD::SETGT:
+        case ISD::SETLE:
+        case ISD::SETOGT:
+        case ISD::SETOLE:
+        case ISD::SETUGT:
+        case ISD::SETULE:
+          Opc = PPC::EFDCMPGT;
+          break;
+      }
+    } else
+      Opc = PPCSubTarget->hasVSX() ? PPC::XSCMPUDP : PPC::FCMPUD;
   } else {
-    assert(LHS.getValueType() == MVT::f64 && "Unknown vt!");
-    Opc = PPCSubTarget->hasVSX() ? PPC::XSCMPUDP : PPC::FCMPUD;
+    assert(LHS.getValueType() == MVT::f128 && "Unknown vt!");
+    assert(PPCSubTarget->hasVSX() && "__float128 requires VSX");
+    Opc = PPC::XSCMPUQP;
   }
   return SDValue(CurDAG->getMachineNode(Opc, dl, MVT::i32, LHS, RHS), 0);
 }
@@ -3893,7 +4035,7 @@ bool PPCDAGToDAGISel::trySETCC(SDNode *N) {
   // Altivec Vector compare instructions do not set any CR register by default and
   // vector compare operations return the same type as the operands.
   if (LHS.getValueType().isVector()) {
-    if (PPCSubTarget->hasQPX())
+    if (PPCSubTarget->hasQPX() || PPCSubTarget->hasSPE())
       return false;
 
     EVT VecVT = LHS.getValueType();
@@ -3922,6 +4064,12 @@ bool PPCDAGToDAGISel::trySETCC(SDNode *N) {
   unsigned Idx = getCRIdxForSetCC(CC, Inv);
   SDValue CCReg = SelectCC(LHS, RHS, CC, dl);
   SDValue IntCR;
+
+  // SPE e*cmp* instructions only set the 'gt' bit, so hard-code that
+  // The correct compare instruction is already set by SelectCC()
+  if (PPCSubTarget->hasSPE() && LHS.getValueType().isFloatingPoint()) {
+    Idx = 1;
+  }
 
   // Force the ccreg into CR7.
   SDValue CR7Reg = CurDAG->getRegister(PPC::CR7, MVT::i32);
@@ -3986,9 +4134,8 @@ bool PPCDAGToDAGISel::isOffsetMultipleOf(SDNode *N, unsigned Val) const {
 
 void PPCDAGToDAGISel::transferMemOperands(SDNode *N, SDNode *Result) {
   // Transfer memoperands.
-  MachineSDNode::mmo_iterator MemOp = MF->allocateMemRefsArray(1);
-  MemOp[0] = cast<MemSDNode>(N)->getMemOperand();
-  cast<MachineSDNode>(Result)->setMemRefs(MemOp, MemOp + 1);
+  MachineMemOperand *MemOp = cast<MemSDNode>(N)->getMemOperand();
+  CurDAG->setNodeMemRefs(cast<MachineSDNode>(Result), {MemOp});
 }
 
 /// This method returns a node after flipping the MSB of each element
@@ -4554,16 +4701,24 @@ void PPCDAGToDAGISel::Select(SDNode *N) {
       SelectCCOp = PPC::SELECT_CC_I4;
     else if (N->getValueType(0) == MVT::i64)
       SelectCCOp = PPC::SELECT_CC_I8;
-    else if (N->getValueType(0) == MVT::f32)
+    else if (N->getValueType(0) == MVT::f32) {
       if (PPCSubTarget->hasP8Vector())
         SelectCCOp = PPC::SELECT_CC_VSSRC;
+      else if (PPCSubTarget->hasSPE())
+        SelectCCOp = PPC::SELECT_CC_SPE4;
       else
         SelectCCOp = PPC::SELECT_CC_F4;
-    else if (N->getValueType(0) == MVT::f64)
+    } else if (N->getValueType(0) == MVT::f64) {
       if (PPCSubTarget->hasVSX())
         SelectCCOp = PPC::SELECT_CC_VSFRC;
+      else if (PPCSubTarget->hasSPE())
+        SelectCCOp = PPC::SELECT_CC_SPE;
       else
         SelectCCOp = PPC::SELECT_CC_F8;
+    } else if (N->getValueType(0) == MVT::f128)
+      SelectCCOp = PPC::SELECT_CC_F16;
+    else if (PPCSubTarget->hasSPE())
+      SelectCCOp = PPC::SELECT_CC_SPE;
     else if (PPCSubTarget->hasQPX() && N->getValueType(0) == MVT::v4f64)
       SelectCCOp = PPC::SELECT_CC_QFRC;
     else if (PPCSubTarget->hasQPX() && N->getValueType(0) == MVT::v4f32)
@@ -4581,14 +4736,6 @@ void PPCDAGToDAGISel::Select(SDNode *N) {
     CurDAG->SelectNodeTo(N, SelectCCOp, N->getValueType(0), Ops);
     return;
   }
-  case ISD::VSELECT:
-    if (PPCSubTarget->hasVSX()) {
-      SDValue Ops[] = { N->getOperand(2), N->getOperand(1), N->getOperand(0) };
-      CurDAG->SelectNodeTo(N, PPC::XXSEL, N->getValueType(0), Ops);
-      return;
-    }
-    break;
-
   case ISD::VECTOR_SHUFFLE:
     if (PPCSubTarget->hasVSX() && (N->getValueType(0) == MVT::v2f64 ||
                                   N->getValueType(0) == MVT::v2i64)) {
@@ -4616,11 +4763,10 @@ void PPCDAGToDAGISel::Select(SDNode *N) {
             SelectAddrIdxOnly(LD->getBasePtr(), Base, Offset)) {
           SDValue Chain = LD->getChain();
           SDValue Ops[] = { Base, Offset, Chain };
-          MachineSDNode::mmo_iterator MemOp = MF->allocateMemRefsArray(1);
-          MemOp[0] = LD->getMemOperand();
+          MachineMemOperand *MemOp = LD->getMemOperand();
           SDNode *NewN = CurDAG->SelectNodeTo(N, PPC::LXVDSX,
                                               N->getValueType(0), Ops);
-          cast<MachineSDNode>(NewN)->setMemRefs(MemOp, MemOp + 1);
+          CurDAG->setNodeMemRefs(cast<MachineSDNode>(NewN), {MemOp});
           return;
         }
       }
@@ -5347,6 +5493,8 @@ void PPCDAGToDAGISel::PeepholeCROps() {
       case PPC::SELECT_QFRC:
       case PPC::SELECT_QSRC:
       case PPC::SELECT_QBRC:
+      case PPC::SELECT_SPE:
+      case PPC::SELECT_SPE4:
       case PPC::SELECT_VRRC:
       case PPC::SELECT_VSFRC:
       case PPC::SELECT_VSSRC:
@@ -5666,6 +5814,8 @@ void PPCDAGToDAGISel::PeepholeCROps() {
       case PPC::SELECT_QFRC:
       case PPC::SELECT_QSRC:
       case PPC::SELECT_QBRC:
+      case PPC::SELECT_SPE:
+      case PPC::SELECT_SPE4:
       case PPC::SELECT_VRRC:
       case PPC::SELECT_VSFRC:
       case PPC::SELECT_VSSRC:
@@ -6044,28 +6194,37 @@ void PPCDAGToDAGISel::PeepholePPC64() {
 
     unsigned FirstOp;
     unsigned StorageOpcode = N->getMachineOpcode();
+    bool RequiresMod4Offset = false;
 
     switch (StorageOpcode) {
     default: continue;
 
+    case PPC::LWA:
+    case PPC::LD:
+    case PPC::DFLOADf64:
+    case PPC::DFLOADf32:
+      RequiresMod4Offset = true;
+      LLVM_FALLTHROUGH;
     case PPC::LBZ:
     case PPC::LBZ8:
-    case PPC::LD:
     case PPC::LFD:
     case PPC::LFS:
     case PPC::LHA:
     case PPC::LHA8:
     case PPC::LHZ:
     case PPC::LHZ8:
-    case PPC::LWA:
     case PPC::LWZ:
     case PPC::LWZ8:
       FirstOp = 0;
       break;
 
+    case PPC::STD:
+    case PPC::DFSTOREf64:
+    case PPC::DFSTOREf32:
+      RequiresMod4Offset = true;
+      LLVM_FALLTHROUGH;
     case PPC::STB:
     case PPC::STB8:
-    case PPC::STD:
     case PPC::STFD:
     case PPC::STFS:
     case PPC::STH:
@@ -6112,9 +6271,7 @@ void PPCDAGToDAGISel::PeepholePPC64() {
       // For these cases, the immediate may not be divisible by 4, in
       // which case the fold is illegal for DS-form instructions.  (The
       // other cases provide aligned addresses and are always safe.)
-      if ((StorageOpcode == PPC::LWA ||
-           StorageOpcode == PPC::LD  ||
-           StorageOpcode == PPC::STD) &&
+      if (RequiresMod4Offset &&
           (!isa<ConstantSDNode>(Base.getOperand(1)) ||
            Base.getConstantOperandVal(1) % 4 != 0))
         continue;
@@ -6176,8 +6333,7 @@ void PPCDAGToDAGISel::PeepholePPC64() {
       if (auto *C = dyn_cast<ConstantSDNode>(ImmOpnd)) {
         Offset += C->getSExtValue();
 
-        if ((StorageOpcode == PPC::LWA || StorageOpcode == PPC::LD ||
-             StorageOpcode == PPC::STD) && (Offset % 4) != 0)
+        if (RequiresMod4Offset && (Offset % 4) != 0)
           continue;
 
         if (!isInt<16>(Offset))
@@ -6209,8 +6365,7 @@ void PPCDAGToDAGISel::PeepholePPC64() {
         // We can't perform this optimization for data whose alignment
         // is insufficient for the instruction encoding.
         if (GV->getAlignment() < 4 &&
-            (StorageOpcode == PPC::LD || StorageOpcode == PPC::STD ||
-             StorageOpcode == PPC::LWA || (Offset % 4) != 0)) {
+            (RequiresMod4Offset || (Offset % 4) != 0)) {
           LLVM_DEBUG(dbgs() << "Rejected this candidate for alignment.\n\n");
           continue;
         }

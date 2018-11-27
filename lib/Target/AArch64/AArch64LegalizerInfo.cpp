@@ -167,9 +167,10 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST) {
       .unsupportedIfMemSizeNotPow2()
       // Lower any any-extending loads left into G_ANYEXT and G_LOAD
       .lowerIf([=](const LegalityQuery &Query) {
-        return Query.Types[0].getSizeInBits() != Query.MMODescrs[0].Size * 8;
+        return Query.Types[0].getSizeInBits() != Query.MMODescrs[0].SizeInBits;
       })
-      .clampNumElements(0, v2s32, v2s32);
+      .clampNumElements(0, v2s32, v2s32)
+      .clampMaxNumElements(0, s64, 1);
 
   getActionDefinitionsBuilder(G_STORE)
       .legalForTypesWithMemSize({{s8, p0, 8},
@@ -185,9 +186,10 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST) {
       .unsupportedIfMemSizeNotPow2()
       .lowerIf([=](const LegalityQuery &Query) {
         return Query.Types[0].isScalar() &&
-               Query.Types[0].getSizeInBits() != Query.MMODescrs[0].Size * 8;
+               Query.Types[0].getSizeInBits() != Query.MMODescrs[0].SizeInBits;
       })
-      .clampNumElements(0, v2s32, v2s32);
+      .clampNumElements(0, v2s32, v2s32)
+      .clampMaxNumElements(0, s64, 1);
 
   // Constants
   getActionDefinitionsBuilder(G_CONSTANT)
@@ -280,14 +282,20 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST) {
 
   if (ST.hasLSE()) {
     getActionDefinitionsBuilder(G_ATOMIC_CMPXCHG_WITH_SUCCESS)
-        .lowerForCartesianProduct({s8, s16, s32, s64}, {s1}, {p0});
+        .lowerIf(all(
+            typeInSet(0, {s8, s16, s32, s64}), typeIs(1, s1), typeIs(2, p0),
+            atomicOrderingAtLeastOrStrongerThan(0, AtomicOrdering::Monotonic)));
 
     getActionDefinitionsBuilder(
         {G_ATOMICRMW_XCHG, G_ATOMICRMW_ADD, G_ATOMICRMW_SUB, G_ATOMICRMW_AND,
          G_ATOMICRMW_OR, G_ATOMICRMW_XOR, G_ATOMICRMW_MIN, G_ATOMICRMW_MAX,
          G_ATOMICRMW_UMIN, G_ATOMICRMW_UMAX, G_ATOMIC_CMPXCHG})
-        .legalForCartesianProduct({s8, s16, s32, s64}, {p0});
+        .legalIf(all(
+            typeInSet(0, {s8, s16, s32, s64}), typeIs(1, p0),
+            atomicOrderingAtLeastOrStrongerThan(0, AtomicOrdering::Monotonic)));
   }
+
+  getActionDefinitionsBuilder(G_BLOCK_ADDR).legalFor({p0});
 
   // Merge/Unmerge
   for (unsigned Op : {G_MERGE_VALUES, G_UNMERGE_VALUES}) {
@@ -378,6 +386,17 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST) {
                                1, Query.Types[1].getElementType());
                          });
   }
+
+  getActionDefinitionsBuilder(G_EXTRACT_VECTOR_ELT)
+      .unsupportedIf([=](const LegalityQuery &Query) {
+        const LLT &EltTy = Query.Types[1].getElementType();
+        return Query.Types[0] != EltTy;
+      })
+      .minScalar(2, s64)
+      .legalIf([=](const LegalityQuery &Query) {
+        const LLT &VecTy = Query.Types[1];
+        return VecTy == v4s32 || VecTy == v2s64;
+      });
 
   computeTables();
   verify(*ST.getInstrInfo());

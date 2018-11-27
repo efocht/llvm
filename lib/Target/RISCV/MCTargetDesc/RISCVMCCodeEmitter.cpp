@@ -11,10 +11,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "MCTargetDesc/RISCVBaseInfo.h"
 #include "MCTargetDesc/RISCVFixupKinds.h"
 #include "MCTargetDesc/RISCVMCExpr.h"
 #include "MCTargetDesc/RISCVMCTargetDesc.h"
+#include "Utils/RISCVBaseInfo.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeEmitter.h"
@@ -115,8 +115,12 @@ void RISCVMCCodeEmitter::expandFunctionCall(const MCInst &MI, raw_ostream &OS,
   Binary = getBinaryCodeForInstr(TmpInst, Fixups, STI);
   support::endian::write(OS, Binary, support::little);
 
-  // Emit JALR Ra, Ra, 0
-  TmpInst = MCInstBuilder(RISCV::JALR).addReg(Ra).addReg(Ra).addImm(0);
+  if (MI.getOpcode() == RISCV::PseudoTAIL)
+    // Emit JALR X0, X6, 0
+    TmpInst = MCInstBuilder(RISCV::JALR).addReg(RISCV::X0).addReg(Ra).addImm(0);
+  else
+    // Emit JALR X1, X1, 0
+    TmpInst = MCInstBuilder(RISCV::JALR).addReg(Ra).addReg(Ra).addImm(0);
   Binary = getBinaryCodeForInstr(TmpInst, Fixups, STI);
   support::endian::write(OS, Binary, support::little);
 }
@@ -192,7 +196,7 @@ unsigned RISCVMCCodeEmitter::getImmOpValue(const MCInst &MI, unsigned OpNo,
   MCInstrDesc const &Desc = MCII.get(MI.getOpcode());
   unsigned MIFrm = Desc.TSFlags & RISCVII::InstFormatMask;
 
-  // If the destination is an immediate, there is nothing to do
+  // If the destination is an immediate, there is nothing to do.
   if (MO.isImm())
     return MO.getImm();
 

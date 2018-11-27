@@ -349,6 +349,12 @@ std::error_code create_hard_link(const Twine &to, const Twine &from);
 std::error_code real_path(const Twine &path, SmallVectorImpl<char> &output,
                           bool expand_tilde = false);
 
+/// Expands ~ expressions to the user's home directory. On Unix ~user
+/// directories are resolved as well.
+///
+/// @param path The path to resolve.
+void expand_tilde(const Twine &path, SmallVectorImpl<char> &output);
+
 /// Get the current path.
 ///
 /// @param result Holds the current path on return.
@@ -393,6 +399,12 @@ std::error_code rename(const Twine &from, const Twine &to);
 /// @param From The path to copy from.
 /// @param To The path to copy to. This is created.
 std::error_code copy_file(const Twine &From, const Twine &To);
+
+/// Copy the contents of \a From to \a To.
+///
+/// @param From The path to copy from.
+/// @param ToFD The open file descriptor of the destination file.
+std::error_code copy_file(const Twine &From, int ToFD);
 
 /// Resize path to size. File is resized as if by POSIX truncate().
 ///
@@ -660,7 +672,15 @@ inline std::error_code file_size(const Twine &Path, uint64_t &Result) {
 /// @returns errc::success if the file times were successfully set, otherwise a
 ///          platform-specific error_code or errc::function_not_supported on
 ///          platforms where the functionality isn't available.
-std::error_code setLastModificationAndAccessTime(int FD, TimePoint<> Time);
+std::error_code setLastAccessAndModificationTime(int FD, TimePoint<> AccessTime,
+                                                 TimePoint<> ModificationTime);
+
+/// Simpler version that sets both file modification and access time to the same
+/// time.
+inline std::error_code setLastAccessAndModificationTime(int FD,
+                                                        TimePoint<> Time) {
+  return setLastAccessAndModificationTime(FD, Time, Time);
+}
 
 /// Is status available?
 ///
@@ -687,7 +707,7 @@ enum CreationDisposition : unsigned {
   ///   * If it does not already exist, create a new file.
   CD_CreateNew = 1,
 
-  /// CD_OpenAlways - When opening a file:
+  /// CD_OpenExisting - When opening a file:
   ///   * If it already exists, open the file with the offset set to 0.
   ///   * If it does not already exist, fail.
   CD_OpenExisting = 2,
@@ -722,6 +742,9 @@ enum OpenFlags : unsigned {
   /// When a child process is launched, this file should remain open in the
   /// child process.
   OF_ChildInherit = 8,
+
+  /// Force files Atime to be updated on access. Only makes a difference on windows.
+  OF_UpdateAtime = 16,
 };
 
 /// Create a uniquely named file.
@@ -1083,38 +1106,51 @@ std::string getMainExecutable(const char *argv0, void *MainExecAddr);
 /// @name Iterators
 /// @{
 
-/// directory_entry - A single entry in a directory. Caches the status either
-/// from the result of the iteration syscall, or the first time status is
-/// called.
+/// directory_entry - A single entry in a directory.
 class directory_entry {
+  // FIXME: different platforms make different information available "for free"
+  // when traversing a directory. The design of this class wraps most of the
+  // information in basic_file_status, so on platforms where we can't populate
+  // that whole structure, callers end up paying for a stat().
+  // std::filesystem::directory_entry may be a better model.
   std::string Path;
-  bool FollowSymlinks;
-  basic_file_status Status;
+  file_type Type;           // Most platforms can provide this.
+  bool FollowSymlinks;      // Affects the behavior of status().
+  basic_file_status Status; // If available.
 
 public:
-  explicit directory_entry(const Twine &path, bool follow_symlinks = true,
-                           basic_file_status st = basic_file_status())
-      : Path(path.str()), FollowSymlinks(follow_symlinks), Status(st) {}
+  explicit directory_entry(const Twine &Path, bool FollowSymlinks = true,
+                           file_type Type = file_type::type_unknown,
+                           basic_file_status Status = basic_file_status())
+      : Path(Path.str()), Type(Type), FollowSymlinks(FollowSymlinks),
+        Status(Status) {}
 
   directory_entry() = default;
 
-  void assign(const Twine &path, basic_file_status st = basic_file_status()) {
-    Path = path.str();
-    Status = st;
-  }
-
-  void replace_filename(const Twine &filename,
-                        basic_file_status st = basic_file_status());
+  void replace_filename(const Twine &Filename, file_type Type,
+                        basic_file_status Status = basic_file_status());
 
   const std::string &path() const { return Path; }
+  // Get basic information about entry file (a subset of fs::status()).
+  // On most platforms this is a stat() call.
+  // On windows the information was already retrieved from the directory.
   ErrorOr<basic_file_status> status() const;
+  // Get the type of this file.
+  // On most platforms (Linux/Mac/Windows/BSD), this was already retrieved.
+  // On some platforms (e.g. Solaris) this is a stat() call.
+  file_type type() const {
+    if (Type != file_type::type_unknown)
+      return Type;
+    auto S = status();
+    return S ? S->type() : file_type::type_unknown;
+  }
 
-  bool operator==(const directory_entry& rhs) const { return Path == rhs.Path; }
-  bool operator!=(const directory_entry& rhs) const { return !(*this == rhs); }
-  bool operator< (const directory_entry& rhs) const;
-  bool operator<=(const directory_entry& rhs) const;
-  bool operator> (const directory_entry& rhs) const;
-  bool operator>=(const directory_entry& rhs) const;
+  bool operator==(const directory_entry& RHS) const { return Path == RHS.Path; }
+  bool operator!=(const directory_entry& RHS) const { return !(*this == RHS); }
+  bool operator< (const directory_entry& RHS) const;
+  bool operator<=(const directory_entry& RHS) const;
+  bool operator> (const directory_entry& RHS) const;
+  bool operator>=(const directory_entry& RHS) const;
 };
 
 namespace detail {
@@ -1152,7 +1188,6 @@ public:
     SmallString<128> path_storage;
     ec = detail::directory_iterator_construct(
         *State, path.toStringRef(path_storage), FollowSymlinks);
-    update_error_code_for_current_entry(ec);
   }
 
   explicit directory_iterator(const directory_entry &de, std::error_code &ec,
@@ -1161,7 +1196,6 @@ public:
     State = std::make_shared<detail::DirIterState>();
     ec = detail::directory_iterator_construct(
         *State, de.path(), FollowSymlinks);
-    update_error_code_for_current_entry(ec);
   }
 
   /// Construct end iterator.
@@ -1170,7 +1204,6 @@ public:
   // No operator++ because we need error_code.
   directory_iterator &increment(std::error_code &ec) {
     ec = directory_iterator_increment(*State);
-    update_error_code_for_current_entry(ec);
     return *this;
   }
 
@@ -1189,26 +1222,6 @@ public:
 
   bool operator!=(const directory_iterator &RHS) const {
     return !(*this == RHS);
-  }
-  // Other members as required by
-  // C++ Std, 24.1.1 Input iterators [input.iterators]
-
-private:
-  // Checks if current entry is valid and populates error code. For example,
-  // current entry may not exist due to broken symbol links.
-  void update_error_code_for_current_entry(std::error_code &ec) {
-    // Bail out if error has already occured earlier to avoid overwriting it.
-    if (ec)
-      return;
-
-    // Empty directory entry is used to mark the end of an interation, it's not
-    // an error.
-    if (State->CurrentEntry == directory_entry())
-      return;
-
-    ErrorOr<basic_file_status> status = State->CurrentEntry.status();
-    if (!status)
-      ec = status.getError();
   }
 };
 
@@ -1247,8 +1260,15 @@ public:
     if (State->HasNoPushRequest)
       State->HasNoPushRequest = false;
     else {
-      ErrorOr<basic_file_status> status = State->Stack.top()->status();
-      if (status && is_directory(*status)) {
+      file_type type = State->Stack.top()->type();
+      if (type == file_type::symlink_file && Follow) {
+        // Resolve the symlink: is it a directory to recurse into?
+        ErrorOr<basic_file_status> status = State->Stack.top()->status();
+        if (status)
+          type = status->type();
+        // Otherwise broken symlink, and we'll continue.
+      }
+      if (type == file_type::directory_file) {
         State->Stack.push(directory_iterator(*State->Stack.top(), ec, Follow));
         if (State->Stack.top() != end_itr) {
           ++State->Level;
@@ -1312,8 +1332,6 @@ public:
   bool operator!=(const recursive_directory_iterator &RHS) const {
     return !(*this == RHS);
   }
-  // Other members as required by
-  // C++ Std, 24.1.1 Input iterators [input.iterators]
 };
 
 /// @}

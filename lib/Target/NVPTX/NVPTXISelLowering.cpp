@@ -375,6 +375,7 @@ NVPTXTargetLowering::NVPTXTargetLowering(const NVPTXTargetMachine &TM,
   setOperationAction(ISD::FP_TO_SINT, MVT::f16, Legal);
   setOperationAction(ISD::BUILD_VECTOR, MVT::v2f16, Custom);
   setOperationAction(ISD::EXTRACT_VECTOR_ELT, MVT::v2f16, Custom);
+  setOperationAction(ISD::INSERT_VECTOR_ELT, MVT::v2f16, Expand);
   setOperationAction(ISD::VECTOR_SHUFFLE, MVT::v2f16, Expand);
 
   setFP16OperationAction(ISD::SETCC, MVT::f16, Legal, Promote);
@@ -559,8 +560,8 @@ NVPTXTargetLowering::NVPTXTargetLowering(const NVPTXTargetMachine &TM,
   }
   setOperationAction(ISD::FMINNUM, MVT::f16, Promote);
   setOperationAction(ISD::FMAXNUM, MVT::f16, Promote);
-  setOperationAction(ISD::FMINNAN, MVT::f16, Promote);
-  setOperationAction(ISD::FMAXNAN, MVT::f16, Promote);
+  setOperationAction(ISD::FMINIMUM, MVT::f16, Promote);
+  setOperationAction(ISD::FMAXIMUM, MVT::f16, Promote);
 
   // No FEXP2, FLOG2.  The PTX ex2 and log2 functions are always approximate.
   // No FPOW or FREM in PTX.
@@ -1169,7 +1170,7 @@ const char *NVPTXTargetLowering::getTargetNodeName(unsigned Opcode) const {
 }
 
 TargetLoweringBase::LegalizeTypeAction
-NVPTXTargetLowering::getPreferredVectorAction(EVT VT) const {
+NVPTXTargetLowering::getPreferredVectorAction(MVT VT) const {
   if (VT.getVectorNumElements() != 1 && VT.getScalarType() == MVT::i1)
     return TypeSplitVector;
   if (VT == MVT::v2f16)

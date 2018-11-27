@@ -452,29 +452,29 @@ SystemZTargetLowering::SystemZTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::FROUND, MVT::v4f32, Legal);
 
     setOperationAction(ISD::FMAXNUM, MVT::f64, Legal);
-    setOperationAction(ISD::FMAXNAN, MVT::f64, Legal);
+    setOperationAction(ISD::FMAXIMUM, MVT::f64, Legal);
     setOperationAction(ISD::FMINNUM, MVT::f64, Legal);
-    setOperationAction(ISD::FMINNAN, MVT::f64, Legal);
+    setOperationAction(ISD::FMINIMUM, MVT::f64, Legal);
 
     setOperationAction(ISD::FMAXNUM, MVT::v2f64, Legal);
-    setOperationAction(ISD::FMAXNAN, MVT::v2f64, Legal);
+    setOperationAction(ISD::FMAXIMUM, MVT::v2f64, Legal);
     setOperationAction(ISD::FMINNUM, MVT::v2f64, Legal);
-    setOperationAction(ISD::FMINNAN, MVT::v2f64, Legal);
+    setOperationAction(ISD::FMINIMUM, MVT::v2f64, Legal);
 
     setOperationAction(ISD::FMAXNUM, MVT::f32, Legal);
-    setOperationAction(ISD::FMAXNAN, MVT::f32, Legal);
+    setOperationAction(ISD::FMAXIMUM, MVT::f32, Legal);
     setOperationAction(ISD::FMINNUM, MVT::f32, Legal);
-    setOperationAction(ISD::FMINNAN, MVT::f32, Legal);
+    setOperationAction(ISD::FMINIMUM, MVT::f32, Legal);
 
     setOperationAction(ISD::FMAXNUM, MVT::v4f32, Legal);
-    setOperationAction(ISD::FMAXNAN, MVT::v4f32, Legal);
+    setOperationAction(ISD::FMAXIMUM, MVT::v4f32, Legal);
     setOperationAction(ISD::FMINNUM, MVT::v4f32, Legal);
-    setOperationAction(ISD::FMINNAN, MVT::v4f32, Legal);
+    setOperationAction(ISD::FMINIMUM, MVT::v4f32, Legal);
 
     setOperationAction(ISD::FMAXNUM, MVT::f128, Legal);
-    setOperationAction(ISD::FMAXNAN, MVT::f128, Legal);
+    setOperationAction(ISD::FMAXIMUM, MVT::f128, Legal);
     setOperationAction(ISD::FMINNUM, MVT::f128, Legal);
-    setOperationAction(ISD::FMINNAN, MVT::f128, Legal);
+    setOperationAction(ISD::FMINIMUM, MVT::f128, Legal);
   }
 
   // We have fused multiply-addition for f32 and f64 but not f128.
@@ -523,14 +523,15 @@ SystemZTargetLowering::SystemZTargetLowering(const TargetMachine &TM,
   setTargetDAGCombine(ISD::ZERO_EXTEND);
   setTargetDAGCombine(ISD::SIGN_EXTEND);
   setTargetDAGCombine(ISD::SIGN_EXTEND_INREG);
+  setTargetDAGCombine(ISD::LOAD);
   setTargetDAGCombine(ISD::STORE);
   setTargetDAGCombine(ISD::EXTRACT_VECTOR_ELT);
   setTargetDAGCombine(ISD::FP_ROUND);
   setTargetDAGCombine(ISD::BSWAP);
-  setTargetDAGCombine(ISD::SHL);
-  setTargetDAGCombine(ISD::SRA);
-  setTargetDAGCombine(ISD::SRL);
-  setTargetDAGCombine(ISD::ROTL);
+  setTargetDAGCombine(ISD::SDIV);
+  setTargetDAGCombine(ISD::UDIV);
+  setTargetDAGCombine(ISD::SREM);
+  setTargetDAGCombine(ISD::UREM);
 
   // Handle intrinsics.
   setOperationAction(ISD::INTRINSIC_W_CHAIN, MVT::Other, Custom);
@@ -609,7 +610,7 @@ struct AddressingMode {
 
   // True if use of index register is supported.
   bool IndexReg;
-  
+
   AddressingMode(bool LongDispl, bool IdxReg) :
     LongDisplacement(LongDispl), IndexReg(IdxReg) {}
 };
@@ -2916,12 +2917,12 @@ SDValue SystemZTargetLowering::lowerBITCAST(SDValue Op,
                          DAG.getConstant(32, DL, MVT::i64));
     }
     SDValue Out64 = DAG.getNode(ISD::BITCAST, DL, MVT::f64, In64);
-    return DAG.getTargetExtractSubreg(SystemZ::subreg_r32,
+    return DAG.getTargetExtractSubreg(SystemZ::subreg_h32,
                                       DL, MVT::f32, Out64);
   }
   if (InVT == MVT::f32 && ResVT == MVT::i32) {
     SDNode *U64 = DAG.getMachineNode(TargetOpcode::IMPLICIT_DEF, DL, MVT::f64);
-    SDValue In64 = DAG.getTargetInsertSubreg(SystemZ::subreg_r32, DL,
+    SDValue In64 = DAG.getTargetInsertSubreg(SystemZ::subreg_h32, DL,
                                              MVT::f64, SDValue(U64, 0), In);
     SDValue Out64 = DAG.getNode(ISD::BITCAST, DL, MVT::i64, In64);
     if (Subtarget.hasHighWord())
@@ -3893,20 +3894,34 @@ static const Permute *matchDoublePermute(const SmallVectorImpl<int> &Bytes,
   return nullptr;
 }
 
-// Convert the mask of the given VECTOR_SHUFFLE into a byte-level mask,
+// Convert the mask of the given shuffle op into a byte-level mask,
 // as if it had type vNi8.
-static void getVPermMask(ShuffleVectorSDNode *VSN,
+static bool getVPermMask(SDValue ShuffleOp,
                          SmallVectorImpl<int> &Bytes) {
-  EVT VT = VSN->getValueType(0);
+  EVT VT = ShuffleOp.getValueType();
   unsigned NumElements = VT.getVectorNumElements();
   unsigned BytesPerElement = VT.getVectorElementType().getStoreSize();
-  Bytes.resize(NumElements * BytesPerElement, -1);
-  for (unsigned I = 0; I < NumElements; ++I) {
-    int Index = VSN->getMaskElt(I);
-    if (Index >= 0)
+
+  if (auto *VSN = dyn_cast<ShuffleVectorSDNode>(ShuffleOp)) {
+    Bytes.resize(NumElements * BytesPerElement, -1);
+    for (unsigned I = 0; I < NumElements; ++I) {
+      int Index = VSN->getMaskElt(I);
+      if (Index >= 0)
+        for (unsigned J = 0; J < BytesPerElement; ++J)
+          Bytes[I * BytesPerElement + J] = Index * BytesPerElement + J;
+    }
+    return true;
+  }
+  if (SystemZISD::SPLAT == ShuffleOp.getOpcode() &&
+      isa<ConstantSDNode>(ShuffleOp.getOperand(1))) {
+    unsigned Index = ShuffleOp.getConstantOperandVal(1);
+    Bytes.resize(NumElements * BytesPerElement, -1);
+    for (unsigned I = 0; I < NumElements; ++I)
       for (unsigned J = 0; J < BytesPerElement; ++J)
         Bytes[I * BytesPerElement + J] = Index * BytesPerElement + J;
+    return true;
   }
+  return false;
 }
 
 // Bytes is a VPERM-like permute vector, except that -1 is used for
@@ -4075,7 +4090,8 @@ bool GeneralShuffle::add(SDValue Op, unsigned Elem) {
       // See whether the bytes we need come from a contiguous part of one
       // operand.
       SmallVector<int, SystemZ::VectorBytes> OpBytes;
-      getVPermMask(cast<ShuffleVectorSDNode>(Op), OpBytes);
+      if (!getVPermMask(Op, OpBytes))
+        break;
       int NewByte;
       if (!getShuffleInput(OpBytes, Byte, BytesPerElement, NewByte))
         break;
@@ -4464,6 +4480,7 @@ static SDValue buildVector(SelectionDAG &DAG, const SDLoc &DL, EVT VT,
   // Constants with undefs to get a full vector constant and use that
   // as the starting point.
   SDValue Result;
+  SDValue ReplicatedVal;
   if (NumConstants > 0) {
     for (unsigned I = 0; I < NumElements; ++I)
       if (!Constants[I].getNode())
@@ -4474,17 +4491,21 @@ static SDValue buildVector(SelectionDAG &DAG, const SDLoc &DL, EVT VT,
     // avoid a false dependency on any previous contents of the vector
     // register.
 
-    // Use a VLREP if at least one element is a load.
-    unsigned LoadElIdx = UINT_MAX;
+    // Use a VLREP if at least one element is a load. Make sure to replicate
+    // the load with the most elements having its value.
+    std::map<const SDNode*, unsigned> UseCounts;
+    SDNode *LoadMaxUses = nullptr;
     for (unsigned I = 0; I < NumElements; ++I)
       if (Elems[I].getOpcode() == ISD::LOAD &&
           cast<LoadSDNode>(Elems[I])->isUnindexed()) {
-        LoadElIdx = I;
-        break;
+        SDNode *Ld = Elems[I].getNode();
+        UseCounts[Ld]++;
+        if (LoadMaxUses == nullptr || UseCounts[LoadMaxUses] < UseCounts[Ld])
+          LoadMaxUses = Ld;
       }
-    if (LoadElIdx != UINT_MAX) {
-      Result = DAG.getNode(SystemZISD::REPLICATE, DL, VT, Elems[LoadElIdx]);
-      Done[LoadElIdx] = true;
+    if (LoadMaxUses != nullptr) {
+      ReplicatedVal = SDValue(LoadMaxUses, 0);
+      Result = DAG.getNode(SystemZISD::REPLICATE, DL, VT, ReplicatedVal);
     } else {
       // Try to use VLVGP.
       unsigned I1 = NumElements / 2 - 1;
@@ -4505,7 +4526,7 @@ static SDValue buildVector(SelectionDAG &DAG, const SDLoc &DL, EVT VT,
 
   // Use VLVGx to insert the other elements.
   for (unsigned I = 0; I < NumElements; ++I)
-    if (!Done[I] && !Elems[I].isUndef())
+    if (!Done[I] && !Elems[I].isUndef() && Elems[I] != ReplicatedVal)
       Result = DAG.getNode(ISD::INSERT_VECTOR_ELT, DL, VT, Result, Elems[I],
                            DAG.getConstant(I, DL, MVT::i32));
   return Result;
@@ -5109,13 +5130,14 @@ SDValue SystemZTargetLowering::combineExtract(const SDLoc &DL, EVT ResVT,
     if (Opcode == ISD::BITCAST)
       // Look through bitcasts.
       Op = Op.getOperand(0);
-    else if (Opcode == ISD::VECTOR_SHUFFLE &&
+    else if ((Opcode == ISD::VECTOR_SHUFFLE || Opcode == SystemZISD::SPLAT) &&
              canTreatAsByteVector(Op.getValueType())) {
       // Get a VPERM-like permute mask and see whether the bytes covered
       // by the extracted element are a contiguous sequence from one
       // source operand.
       SmallVector<int, SystemZ::VectorBytes> Bytes;
-      getVPermMask(cast<ShuffleVectorSDNode>(Op), Bytes);
+      if (!getVPermMask(Op, Bytes))
+        break;
       int First;
       if (!getShuffleInput(Bytes, Index * BytesPerElement,
                            BytesPerElement, First))
@@ -5347,6 +5369,46 @@ SDValue SystemZTargetLowering::combineMERGE(
   return SDValue();
 }
 
+SDValue SystemZTargetLowering::combineLOAD(
+    SDNode *N, DAGCombinerInfo &DCI) const {
+  SelectionDAG &DAG = DCI.DAG;
+  EVT LdVT = N->getValueType(0);
+  if (LdVT.isVector() || LdVT.isInteger())
+    return SDValue();
+  // Transform a scalar load that is REPLICATEd as well as having other
+  // use(s) to the form where the other use(s) use the first element of the
+  // REPLICATE instead of the load. Otherwise instruction selection will not
+  // produce a VLREP. Avoid extracting to a GPR, so only do this for floating
+  // point loads.
+
+  SDValue Replicate;
+  SmallVector<SDNode*, 8> OtherUses;
+  for (SDNode::use_iterator UI = N->use_begin(), UE = N->use_end();
+       UI != UE; ++UI) {
+    if (UI->getOpcode() == SystemZISD::REPLICATE) {
+      if (Replicate)
+        return SDValue(); // Should never happen
+      Replicate = SDValue(*UI, 0);
+    }
+    else if (UI.getUse().getResNo() == 0)
+      OtherUses.push_back(*UI);
+  }
+  if (!Replicate || OtherUses.empty())
+    return SDValue();
+
+  SDLoc DL(N);
+  SDValue Extract0 = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, DL, LdVT,
+                              Replicate, DAG.getConstant(0, DL, MVT::i32));
+  // Update uses of the loaded Value while preserving old chains.
+  for (SDNode *U : OtherUses) {
+    SmallVector<SDValue, 8> Ops;
+    for (SDValue Op : U->ops())
+      Ops.push_back((Op.getNode() == N && Op.getResNo() == 0) ? Extract0 : Op);
+    DAG.UpdateNodeOperands(U, Ops);
+  }
+  return SDValue(N, 0);
+}
+
 SDValue SystemZTargetLowering::combineSTORE(
     SDNode *N, DAGCombinerInfo &DCI) const {
   SelectionDAG &DAG = DCI.DAG;
@@ -5382,8 +5444,7 @@ SDValue SystemZTargetLowering::combineSTORE(
         BSwapOp = DAG.getNode(ISD::ANY_EXTEND, SDLoc(N), MVT::i32, BSwapOp);
 
       SDValue Ops[] = {
-        N->getOperand(0), BSwapOp, N->getOperand(2),
-        DAG.getValueType(Op1.getValueType())
+        N->getOperand(0), BSwapOp, N->getOperand(2)
       };
 
       return
@@ -5480,13 +5541,14 @@ SDValue SystemZTargetLowering::combineBSWAP(
       // Create the byte-swapping load.
       SDValue Ops[] = {
         LD->getChain(),    // Chain
-        LD->getBasePtr(),  // Ptr
-        DAG.getValueType(N->getValueType(0)) // VT
+        LD->getBasePtr()   // Ptr
       };
+      EVT LoadVT = N->getValueType(0);
+      if (LoadVT == MVT::i16)
+        LoadVT = MVT::i32;
       SDValue BSLoad =
         DAG.getMemIntrinsicNode(SystemZISD::LRV, SDLoc(N),
-                                DAG.getVTList(N->getValueType(0) == MVT::i64 ?
-                                              MVT::i64 : MVT::i32, MVT::Other),
+                                DAG.getVTList(LoadVT, MVT::Other),
                                 Ops, LD->getMemoryVT(), LD->getMemOperand());
 
       // If this is an i16 load, insert the truncate.
@@ -5505,76 +5567,6 @@ SDValue SystemZTargetLowering::combineBSWAP(
       // Return N so it doesn't get rechecked!
       return SDValue(N, 0);
     }
-  return SDValue();
-}
-
-SDValue SystemZTargetLowering::combineSHIFTROT(
-    SDNode *N, DAGCombinerInfo &DCI) const {
-
-  SelectionDAG &DAG = DCI.DAG;
-
-  // Shift/rotate instructions only use the last 6 bits of the second operand
-  // register. If the second operand is the result of an AND with an immediate
-  // value that has its last 6 bits set, we can safely remove the AND operation.
-  //
-  // If the AND operation doesn't have the last 6 bits set, we can't remove it
-  // entirely, but we can still truncate it to a 16-bit value. This prevents
-  // us from ending up with a NILL with a signed operand, which will cause the
-  // instruction printer to abort.
-  SDValue N1 = N->getOperand(1);
-  if (N1.getOpcode() == ISD::AND) {
-    SDValue AndMaskOp = N1->getOperand(1);
-    auto *AndMask = dyn_cast<ConstantSDNode>(AndMaskOp);
-
-    // The AND mask is constant
-    if (AndMask) {
-      auto AmtVal = AndMask->getZExtValue();
-      
-      // Bottom 6 bits are set
-      if ((AmtVal & 0x3f) == 0x3f) {
-        SDValue AndOp = N1->getOperand(0);
-
-        // This is the only use, so remove the node
-        if (N1.hasOneUse()) {
-          // Combine the AND away
-          DCI.CombineTo(N1.getNode(), AndOp);
-
-          // Return N so it isn't rechecked
-          return SDValue(N, 0);
-
-        // The node will be reused, so create a new node for this one use
-        } else {
-          SDValue Replace = DAG.getNode(N->getOpcode(), SDLoc(N),
-                                        N->getValueType(0), N->getOperand(0),
-                                        AndOp);
-          DCI.AddToWorklist(Replace.getNode());
-
-          return Replace;
-        }
-
-      // We can't remove the AND, but we can use NILL here (normally we would
-      // use NILF). Only keep the last 16 bits of the mask. The actual
-      // transformation will be handled by .td definitions.
-      } else if (AmtVal >> 16 != 0) {
-        SDValue AndOp = N1->getOperand(0);
-
-        auto NewMask = DAG.getConstant(AndMask->getZExtValue() & 0x0000ffff,
-                                       SDLoc(AndMaskOp),
-                                       AndMaskOp.getValueType());
-
-        auto NewAnd = DAG.getNode(N1.getOpcode(), SDLoc(N1), N1.getValueType(),
-                                  AndOp, NewMask);
-
-        SDValue Replace = DAG.getNode(N->getOpcode(), SDLoc(N),
-                                      N->getValueType(0), N->getOperand(0),
-                                      NewAnd);
-        DCI.AddToWorklist(Replace.getNode());
-
-        return Replace;
-      }
-    }
-  }
-
   return SDValue();
 }
 
@@ -5722,6 +5714,23 @@ SDValue SystemZTargetLowering::combineGET_CCMASK(
   return Select->getOperand(4);
 }
 
+SDValue SystemZTargetLowering::combineIntDIVREM(
+    SDNode *N, DAGCombinerInfo &DCI) const {
+  SelectionDAG &DAG = DCI.DAG;
+  EVT VT = N->getValueType(0);
+  // In the case where the divisor is a vector of constants a cheaper
+  // sequence of instructions can replace the divide. BuildSDIV is called to
+  // do this during DAG combining, but it only succeeds when it can build a
+  // multiplication node. The only option for SystemZ is ISD::SMUL_LOHI, and
+  // since it is not Legal but Custom it can only happen before
+  // legalization. Therefore we must scalarize this early before Combine
+  // 1. For widened vectors, this is already the result of type legalization.
+  if (VT.isVector() && isTypeLegal(VT) &&
+      DAG.isConstantIntBuildVectorOrConstantInt(N->getOperand(1)))
+    return DAG.UnrollVectorOp(N);
+  return SDValue();
+}
+
 SDValue SystemZTargetLowering::PerformDAGCombine(SDNode *N,
                                                  DAGCombinerInfo &DCI) const {
   switch(N->getOpcode()) {
@@ -5731,18 +5740,19 @@ SDValue SystemZTargetLowering::PerformDAGCombine(SDNode *N,
   case ISD::SIGN_EXTEND_INREG:  return combineSIGN_EXTEND_INREG(N, DCI);
   case SystemZISD::MERGE_HIGH:
   case SystemZISD::MERGE_LOW:   return combineMERGE(N, DCI);
+  case ISD::LOAD:               return combineLOAD(N, DCI);
   case ISD::STORE:              return combineSTORE(N, DCI);
   case ISD::EXTRACT_VECTOR_ELT: return combineEXTRACT_VECTOR_ELT(N, DCI);
   case SystemZISD::JOIN_DWORDS: return combineJOIN_DWORDS(N, DCI);
   case ISD::FP_ROUND:           return combineFP_ROUND(N, DCI);
   case ISD::BSWAP:              return combineBSWAP(N, DCI);
-  case ISD::SHL:
-  case ISD::SRA:
-  case ISD::SRL:
-  case ISD::ROTL:               return combineSHIFTROT(N, DCI);
   case SystemZISD::BR_CCMASK:   return combineBR_CCMASK(N, DCI);
   case SystemZISD::SELECT_CCMASK: return combineSELECT_CCMASK(N, DCI);
   case SystemZISD::GET_CCMASK:  return combineGET_CCMASK(N, DCI);
+  case ISD::SDIV:
+  case ISD::UDIV:
+  case ISD::SREM:
+  case ISD::UREM:               return combineIntDIVREM(N, DCI);
   }
 
   return SDValue();
@@ -6914,7 +6924,7 @@ MachineBasicBlock *SystemZTargetLowering::emitMemMemWrapper(
         .addImm(ThisLength)
         .add(SrcBase)
         .addImm(SrcDisp)
-        ->setMemRefs(MI.memoperands_begin(), MI.memoperands_end());
+        .setMemRefs(MI.memoperands());
     DestDisp += ThisLength;
     SrcDisp += ThisLength;
     Length -= ThisLength;

@@ -14,6 +14,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCParser/MCAsmLexer.h"
+#include "llvm/MC/MCParser/MCParsedAsmOperand.h"
 #include "llvm/MC/MCParser/MCAsmParserExtension.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/Support/SMLoc.h"
@@ -371,9 +372,9 @@ public:
     SemaCallback = Callback;
   }
 
-  // Target-specific parsing of assembler-level variable assignment.
-  virtual bool parseAssignmentExpression(const MCExpr *&Res, SMLoc &EndLoc) {
-    return getParser().parseExpression(Res, EndLoc);
+  // Target-specific parsing of expression.
+  virtual bool parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
+    return getParser().parsePrimaryExpr(Res, EndLoc);
   }
 
   virtual bool ParseRegister(unsigned &RegNo, SMLoc &StartLoc,
@@ -453,6 +454,15 @@ public:
   virtual void convertToMapAndConstraints(unsigned Kind,
                                           const OperandVector &Operands) = 0;
 
+  /// Returns whether two registers are equal and is used by the tied-operands
+  /// checks in the AsmMatcher. This method can be overridden allow e.g. a
+  /// sub- or super-register as the tied operand.
+  virtual bool regsEqual(const MCParsedAsmOperand &Op1,
+                         const MCParsedAsmOperand &Op2) const {
+    assert(Op1.isReg() && Op2.isReg() && "Operands not all regs");
+    return Op1.getReg() == Op2.getReg();
+  }
+
   // Return whether this parser uses assignment statements with equals tokens
   virtual bool equalIsAsmAssignment() { return true; };
   // Return whether this start of statement identifier is a label
@@ -466,6 +476,9 @@ public:
     return nullptr;
   }
 
+  // For actions that have to be performed before a label is emitted
+  virtual void doBeforeLabelEmit(MCSymbol *Symbol) {}
+  
   virtual void onLabelParsed(MCSymbol *Symbol) {}
 
   /// Ensure that all previously parsed instructions have been emitted to the

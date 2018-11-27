@@ -944,9 +944,12 @@ VEAsmParser::parseVEAsmOperand(std::unique_ptr<VEOperand> &Op,
 
       const MCExpr *Res = MCSymbolRefExpr::create(Sym, MCSymbolRefExpr::VK_None,
                                                   getContext());
+#if 0
+      // FIXME: VE may need some modification here.
       if (isCall && getContext().getObjectFileInfo()->isPositionIndependent())
         Res = VEMCExpr::create(VEMCExpr::VK_VE_WPLT30, Res,
                                   getContext());
+#endif
       Op = VEOperand::CreateImm(Res, S, E);
     }
     break;
@@ -1070,13 +1073,13 @@ VEAsmParser::adjustPICRelocation(VEMCExpr::VariantKind VK,
   if (getContext().getObjectFileInfo()->isPositionIndependent()) {
     switch(VK) {
     default: break;
-    case VEMCExpr::VK_VE_LO:
-      VK = (hasGOTReference(subExpr) ? VEMCExpr::VK_VE_PC10
-                                     : VEMCExpr::VK_VE_GOT10);
+    case VEMCExpr::VK_VE_LO32:
+      VK = (hasGOTReference(subExpr) ? VEMCExpr::VK_VE_PC_LO32
+                                     : VEMCExpr::VK_VE_GOT_LO32);
       break;
-    case VEMCExpr::VK_VE_HI:
-      VK = (hasGOTReference(subExpr) ? VEMCExpr::VK_VE_PC22
-                                     : VEMCExpr::VK_VE_GOT22);
+    case VEMCExpr::VK_VE_HI32:
+      VK = (hasGOTReference(subExpr) ? VEMCExpr::VK_VE_PC_HI32
+                                     : VEMCExpr::VK_VE_GOT_HI32);
       break;
     }
   }

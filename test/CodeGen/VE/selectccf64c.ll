@@ -1,6 +1,6 @@
 ; RUN: llc < %s -mtriple=ve-unknown-unknown | FileCheck %s
 
-define double @selectccsgti8(i8, i8, double, double) #0 {
+define double @selectccsgti8(i8, i8, double, double) {
 ; CHECK-LABEL: selectccsgti8:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    sla.w.sx %s34, %s1, 24
@@ -16,7 +16,7 @@ define double @selectccsgti8(i8, i8, double, double) #0 {
   ret double %6
 }
 
-define double @selectccsgti16(i16, i16, double, double) #0 {
+define double @selectccsgti16(i16, i16, double, double) {
 ; CHECK-LABEL: selectccsgti16:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    sla.w.sx %s34, %s1, 16
@@ -32,7 +32,7 @@ define double @selectccsgti16(i16, i16, double, double) #0 {
   ret double %6
 }
 
-define double @selectccsgti32(i32, i32, double, double) #0 {
+define double @selectccsgti32(i32, i32, double, double) {
 ; CHECK-LABEL: selectccsgti32:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    cmps.w.sx %s34, %s0, %s1
@@ -44,7 +44,7 @@ define double @selectccsgti32(i32, i32, double, double) #0 {
   ret double %6
 }
 
-define double @selectccsgti64(i64, i64, double, double) #0 {
+define double @selectccsgti64(i64, i64, double, double) {
 ; CHECK-LABEL: selectccsgti64:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    cmps.l %s34, %s0, %s1
@@ -56,7 +56,27 @@ define double @selectccsgti64(i64, i64, double, double) #0 {
   ret double %6
 }
 
-define double @selectccogtf32(float, float, double, double) #0 {
+define double @selectccsgti128(i128, i128, double, double) {
+; CHECK-LABEL: selectccsgti128:
+; CHECK:       .LBB{{[0-9]+}}_2:
+; CHECK-NEXT:    or %s34, 0, (0)1
+; CHECK-NEXT:    cmps.l %s35, %s1, %s3
+; CHECK-NEXT:    or %s36, 0, %s34
+; CHECK-NEXT:    cmov.l.gt %s36, (63)0, %s35
+; CHECK-NEXT:    cmpu.l %s37, %s0, %s2
+; CHECK-NEXT:    cmov.l.gt %s34, (63)0, %s37
+; CHECK-NEXT:    cmov.l.eq %s36, %s34, %s35
+; CHECK-NEXT:    or %s34, 0, (0)1
+; CHECK-NEXT:    cmps.w.sx %s34, %s36, %s34
+; CHECK-NEXT:    cmov.w.ne %s5, %s4, %s34
+; CHECK-NEXT:    or %s0, 0, %s5
+; CHECK-NEXT:    or %s11, 0, %s9
+  %5 = icmp sgt i128 %0, %1
+  %6 = select i1 %5, double %2, double %3
+  ret double %6
+}
+
+define double @selectccogtf32(float, float, double, double) {
 ; CHECK-LABEL: selectccogtf32:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    fcmp.s %s34, %s0, %s1
@@ -68,7 +88,7 @@ define double @selectccogtf32(float, float, double, double) #0 {
   ret double %6
 }
 
-define double @selectccogtf64(double, double, double, double) #0 {
+define double @selectccogtf64(double, double, double, double) {
 ; CHECK-LABEL: selectccogtf64:
 ; CHECK:       .LBB{{[0-9]+}}_2:
 ; CHECK-NEXT:    fcmp.d %s34, %s0, %s1

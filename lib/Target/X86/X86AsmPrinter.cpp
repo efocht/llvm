@@ -129,6 +129,9 @@ static void printSymbolOperand(X86AsmPrinter &P, const MachineOperand &MO,
     if (MO.getTargetFlags() == X86II::MO_DLLIMPORT)
       GVSym =
           P.OutContext.getOrCreateSymbol(Twine("__imp_") + GVSym->getName());
+    else if (MO.getTargetFlags() == X86II::MO_COFFSTUB)
+      GVSym =
+          P.OutContext.getOrCreateSymbol(Twine(".refptr.") + GVSym->getName());
 
     if (MO.getTargetFlags() == X86II::MO_DARWIN_NONLAZY ||
         MO.getTargetFlags() == X86II::MO_DARWIN_NONLAZY_PIC_BASE) {
@@ -161,6 +164,7 @@ static void printSymbolOperand(X86AsmPrinter &P, const MachineOperand &MO,
     break;
   case X86II::MO_DARWIN_NONLAZY:
   case X86II::MO_DLLIMPORT:
+  case X86II::MO_COFFSTUB:
     // These affect the name of the symbol, not any suffix.
     break;
   case X86II::MO_GOT_ABSOLUTE_ADDRESS:
@@ -583,21 +587,28 @@ void X86AsmPrinter::EmitStartOfAsmFile(Module &M) {
   if (TT.isOSBinFormatCOFF()) {
     // Emit an absolute @feat.00 symbol.  This appears to be some kind of
     // compiler features bitfield read by link.exe.
+    MCSymbol *S = MMI->getContext().getOrCreateSymbol(StringRef("@feat.00"));
+    OutStreamer->BeginCOFFSymbolDef(S);
+    OutStreamer->EmitCOFFSymbolStorageClass(COFF::IMAGE_SYM_CLASS_STATIC);
+    OutStreamer->EmitCOFFSymbolType(COFF::IMAGE_SYM_DTYPE_NULL);
+    OutStreamer->EndCOFFSymbolDef();
+    int64_t Feat00Flags = 0;
+
     if (TT.getArch() == Triple::x86) {
-      MCSymbol *S = MMI->getContext().getOrCreateSymbol(StringRef("@feat.00"));
-      OutStreamer->BeginCOFFSymbolDef(S);
-      OutStreamer->EmitCOFFSymbolStorageClass(COFF::IMAGE_SYM_CLASS_STATIC);
-      OutStreamer->EmitCOFFSymbolType(COFF::IMAGE_SYM_DTYPE_NULL);
-      OutStreamer->EndCOFFSymbolDef();
       // According to the PE-COFF spec, the LSB of this value marks the object
       // for "registered SEH".  This means that all SEH handler entry points
       // must be registered in .sxdata.  Use of any unregistered handlers will
       // cause the process to terminate immediately.  LLVM does not know how to
       // register any SEH handlers, so its object files should be safe.
-      OutStreamer->EmitSymbolAttribute(S, MCSA_Global);
-      OutStreamer->EmitAssignment(
-          S, MCConstantExpr::create(int64_t(1), MMI->getContext()));
+      Feat00Flags |= 1;
     }
+
+    if (M.getModuleFlag("cfguardtable"))
+      Feat00Flags |= 0x800; // Object is CFG-aware.
+
+    OutStreamer->EmitSymbolAttribute(S, MCSA_Global);
+    OutStreamer->EmitAssignment(
+        S, MCConstantExpr::create(Feat00Flags, MMI->getContext()));
   }
   OutStreamer->EmitSyntaxDirective();
 
@@ -631,64 +642,48 @@ emitNonLazySymbolPointer(MCStreamer &OutStreamer, MCSymbol *StubLabel,
         4 /*size*/);
 }
 
-MCSymbol *X86AsmPrinter::GetCPISymbol(unsigned CPID) const {
-  if (Subtarget->isTargetKnownWindowsMSVC()) {
-    const MachineConstantPoolEntry &CPE =
-        MF->getConstantPool()->getConstants()[CPID];
-    if (!CPE.isMachineConstantPoolEntry()) {
-      const DataLayout &DL = MF->getDataLayout();
-      SectionKind Kind = CPE.getSectionKind(&DL);
-      const Constant *C = CPE.Val.ConstVal;
-      unsigned Align = CPE.Alignment;
-      if (const MCSectionCOFF *S = dyn_cast<MCSectionCOFF>(
-              getObjFileLowering().getSectionForConstant(DL, Kind, C, Align))) {
-        if (MCSymbol *Sym = S->getCOMDATSymbol()) {
-          if (Sym->isUndefined())
-            OutStreamer->EmitSymbolAttribute(Sym, MCSA_Global);
-          return Sym;
-        }
-      }
-    }
-  }
+static void emitNonLazyStubs(MachineModuleInfo *MMI, MCStreamer &OutStreamer) {
 
-  return AsmPrinter::GetCPISymbol(CPID);
+  MachineModuleInfoMachO &MMIMacho =
+      MMI->getObjFileInfo<MachineModuleInfoMachO>();
+
+  // Output stubs for dynamically-linked functions.
+  MachineModuleInfoMachO::SymbolListTy Stubs;
+
+  // Output stubs for external and common global variables.
+  Stubs = MMIMacho.GetGVStubList();
+  if (!Stubs.empty()) {
+    OutStreamer.SwitchSection(MMI->getContext().getMachOSection(
+        "__IMPORT", "__pointers", MachO::S_NON_LAZY_SYMBOL_POINTERS,
+        SectionKind::getMetadata()));
+
+    for (auto &Stub : Stubs)
+      emitNonLazySymbolPointer(OutStreamer, Stub.first, Stub.second);
+
+    Stubs.clear();
+    OutStreamer.AddBlankLine();
+  }
 }
 
 void X86AsmPrinter::EmitEndOfAsmFile(Module &M) {
   const Triple &TT = TM.getTargetTriple();
 
   if (TT.isOSBinFormatMachO()) {
-    // All darwin targets use mach-o.
-    MachineModuleInfoMachO &MMIMacho =
-        MMI->getObjFileInfo<MachineModuleInfoMachO>();
+    // Mach-O uses non-lazy symbol stubs to encode per-TU information into
+    // global table for symbol lookup.
+    emitNonLazyStubs(MMI, *OutStreamer);
 
-    // Output stubs for dynamically-linked functions.
-    MachineModuleInfoMachO::SymbolListTy Stubs;
-
-    // Output stubs for external and common global variables.
-    Stubs = MMIMacho.GetGVStubList();
-    if (!Stubs.empty()) {
-      MCSection *TheSection = OutContext.getMachOSection(
-          "__IMPORT", "__pointers", MachO::S_NON_LAZY_SYMBOL_POINTERS,
-          SectionKind::getMetadata());
-      OutStreamer->SwitchSection(TheSection);
-
-      for (auto &Stub : Stubs)
-        emitNonLazySymbolPointer(*OutStreamer, Stub.first, Stub.second);
-
-      Stubs.clear();
-      OutStreamer->AddBlankLine();
-    }
-
+    // Emit stack and fault map information.
     SM.serializeToStackMapSection();
     FM.serializeToFaultMapSection();
 
-    // Funny Darwin hack: This flag tells the linker that no global symbols
-    // contain code that falls through to other global symbols (e.g. the obvious
-    // implementation of multiple entry points).  If this doesn't occur, the
-    // linker can safely perform dead code stripping.  Since LLVM never
-    // generates code that does this, it is always safe to set.
+    // This flag tells the linker that no global symbols contain code that fall
+    // through to other global symbols (e.g. an implementation of multiple entry
+    // points). If this doesn't occur, the linker can safely perform dead code
+    // stripping. Since LLVM never generates code that does this, it is always
+    // safe to set.
     OutStreamer->EmitAssemblerFlag(MCAF_SubsectionsViaSymbols);
+    return;
   }
 
   if (TT.isKnownWindowsMSVCEnvironment() && MMI->usesVAFloatArgument()) {
@@ -696,15 +691,18 @@ void X86AsmPrinter::EmitEndOfAsmFile(Module &M) {
         (TT.getArch() == Triple::x86_64) ? "_fltused" : "__fltused";
     MCSymbol *S = MMI->getContext().getOrCreateSymbol(SymbolName);
     OutStreamer->EmitSymbolAttribute(S, MCSA_Global);
+    return;
   }
 
   if (TT.isOSBinFormatCOFF()) {
     SM.serializeToStackMapSection();
+    return;
   }
 
   if (TT.isOSBinFormatELF()) {
     SM.serializeToStackMapSection();
     FM.serializeToFaultMapSection();
+    return;
   }
 }
 

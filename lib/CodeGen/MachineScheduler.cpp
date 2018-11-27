@@ -100,8 +100,11 @@ static cl::opt<std::string> SchedOnlyFunc("misched-only-func", cl::Hidden,
   cl::desc("Only schedule this function"));
 static cl::opt<unsigned> SchedOnlyBlock("misched-only-block", cl::Hidden,
                                         cl::desc("Only schedule this MBB#"));
+static cl::opt<bool> PrintDAGs("misched-print-dags", cl::Hidden,
+                              cl::desc("Print schedule DAGs"));
 #else
-static bool ViewMISchedDAGs = false;
+static const bool ViewMISchedDAGs = false;
+static const bool PrintDAGs = false;
 #endif // NDEBUG
 
 /// Avoid quadratic complexity in unusually large basic blocks by limiting the
@@ -237,7 +240,8 @@ void PostMachineScheduler::getAnalysisUsage(AnalysisUsage &AU) const {
   MachineFunctionPass::getAnalysisUsage(AU);
 }
 
-MachinePassRegistry MachineSchedRegistry::Registry;
+MachinePassRegistry<MachineSchedRegistry::ScheduleDAGCtor>
+    MachineSchedRegistry::Registry;
 
 /// A dummy default scheduler factory indicates whether the scheduler
 /// is overridden on the command line.
@@ -345,7 +349,7 @@ ScheduleDAGInstrs *PostMachineScheduler::createPostMachineScheduler() {
 /// This design avoids exposing scheduling boundaries to the DAG builder,
 /// simplifying the DAG builder's support for "special" target instructions.
 /// At the same time the design allows target schedulers to operate across
-/// scheduling boundaries, for example to bundle the boudary instructions
+/// scheduling boundaries, for example to bundle the boundary instructions
 /// without reordering them. This creates complexity, because the target
 /// scheduler must update the RegionBegin and RegionEnd positions cached by
 /// ScheduleDAGInstrs whenever adding or removing instructions. A much simpler
@@ -633,7 +637,7 @@ void ScheduleDAGMI::releaseSucc(SUnit *SU, SDep *SuccEdge) {
 #ifndef NDEBUG
   if (SuccSU->NumPredsLeft == 0) {
     dbgs() << "*** Scheduling failed! ***\n";
-    SuccSU->dump(this);
+    dumpNode(*SuccSU);
     dbgs() << " has been released too many times!\n";
     llvm_unreachable(nullptr);
   }
@@ -670,7 +674,7 @@ void ScheduleDAGMI::releasePred(SUnit *SU, SDep *PredEdge) {
 #ifndef NDEBUG
   if (PredSU->NumSuccsLeft == 0) {
     dbgs() << "*** Scheduling failed! ***\n";
-    PredSU->dump(this);
+    dumpNode(*PredSU);
     dbgs() << " has been released too many times!\n";
     llvm_unreachable(nullptr);
   }
@@ -764,10 +768,8 @@ void ScheduleDAGMI::schedule() {
   SmallVector<SUnit*, 8> TopRoots, BotRoots;
   findRootsAndBiasEdges(TopRoots, BotRoots);
 
-  LLVM_DEBUG(if (EntrySU.getInstr() != nullptr) EntrySU.dumpAll(this);
-             for (const SUnit &SU
-                  : SUnits) SU.dumpAll(this);
-             if (ExitSU.getInstr() != nullptr) ExitSU.dumpAll(this););
+  LLVM_DEBUG(dump());
+  if (PrintDAGs) dump();
   if (ViewMISchedDAGs) viewGraph();
 
   // Initialize the strategy before modifying the DAG.
@@ -920,7 +922,7 @@ void ScheduleDAGMI::placeDebugValues() {
 LLVM_DUMP_METHOD void ScheduleDAGMI::dumpSchedule() const {
   for (MachineBasicBlock::iterator MI = begin(), ME = end(); MI != ME; ++MI) {
     if (SUnit *SU = getSUnit(&(*MI)))
-      SU->dump(this);
+      dumpNode(*SU);
     else
       dbgs() << "Missing SUnit\n";
   }
@@ -1171,6 +1173,29 @@ void ScheduleDAGMILive::updatePressureDiffs(
   }
 }
 
+void ScheduleDAGMILive::dump() const {
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+  if (EntrySU.getInstr() != nullptr)
+    dumpNodeAll(EntrySU);
+  for (const SUnit &SU : SUnits) {
+    dumpNodeAll(SU);
+    if (ShouldTrackPressure) {
+      dbgs() << "  Pressure Diff      : ";
+      getPressureDiff(&SU).dump(*TRI);
+    }
+    dbgs() << "  Single Issue       : ";
+    if (SchedModel.mustBeginGroup(SU.getInstr()) &&
+        SchedModel.mustEndGroup(SU.getInstr()))
+      dbgs() << "true;";
+    else
+      dbgs() << "false;";
+    dbgs() << '\n';
+  }
+  if (ExitSU.getInstr() != nullptr)
+    dumpNodeAll(ExitSU);
+#endif
+}
+
 /// schedule - Called back from MachineScheduler::runOnMachineFunction
 /// after setting up the current scheduling region. [RegionBegin, RegionEnd)
 /// only includes instructions that have DAG nodes, not scheduling boundaries.
@@ -1197,22 +1222,8 @@ void ScheduleDAGMILive::schedule() {
   // This may initialize a DFSResult to be used for queue priority.
   SchedImpl->initialize(this);
 
-  LLVM_DEBUG(if (EntrySU.getInstr() != nullptr) EntrySU.dumpAll(this);
-             for (const SUnit &SU
-                  : SUnits) {
-               SU.dumpAll(this);
-               if (ShouldTrackPressure) {
-                 dbgs() << "  Pressure Diff      : ";
-                 getPressureDiff(&SU).dump(*TRI);
-               }
-               dbgs() << "  Single Issue       : ";
-               if (SchedModel.mustBeginGroup(SU.getInstr()) &&
-                   SchedModel.mustEndGroup(SU.getInstr()))
-                 dbgs() << "true;";
-               else
-                 dbgs() << "false;";
-               dbgs() << '\n';
-             } if (ExitSU.getInstr() != nullptr) ExitSU.dumpAll(this););
+  LLVM_DEBUG(dump());
+  if (PrintDAGs) dump();
   if (ViewMISchedDAGs) viewGraph();
 
   // Initialize ready queues now that the DAG and priority data are finalized.
@@ -1544,7 +1555,7 @@ void BaseMemOpClusterMutation::clusterNeighboringMemOps(
   if (MemOpRecords.size() < 2)
     return;
 
-  llvm::sort(MemOpRecords.begin(), MemOpRecords.end());
+  llvm::sort(MemOpRecords);
   unsigned ClusterLength = 1;
   for (unsigned Idx = 0, End = MemOpRecords.size(); Idx < (End - 1); ++Idx) {
     SUnit *SUa = MemOpRecords[Idx].SU;
@@ -1708,7 +1719,7 @@ void CopyConstrain::constrainLocalCopy(SUnit *CopySU, ScheduleDAGMILive *DAG) {
 
   // If GlobalSegment is killed at the LocalLI->start, the call to find()
   // returned the next global segment. But if GlobalSegment overlaps with
-  // LocalLI->start, then advance to the next segement. If a hole in GlobalLI
+  // LocalLI->start, then advance to the next segment. If a hole in GlobalLI
   // exists in LocalLI's vicinity, GlobalSegment will be the end of the hole.
   if (GlobalSegment->contains(LocalLI->beginIndex()))
     ++GlobalSegment;
@@ -1925,7 +1936,7 @@ getNextResourceCycle(unsigned PIdx, unsigned Cycles) {
 /// The scheduler supports two modes of hazard recognition. The first is the
 /// ScheduleHazardRecognizer API. It is a fully general hazard recognizer that
 /// supports highly complicated in-order reservation tables
-/// (ScoreboardHazardRecognizer) and arbitraty target-specific logic.
+/// (ScoreboardHazardRecognizer) and arbitrary target-specific logic.
 ///
 /// The second is a streamlined mechanism that checks for hazards based on
 /// simple counters that the scheduler itself maintains. It explicitly checks
@@ -2397,6 +2408,52 @@ initResourceDelta(const ScheduleDAGMI *DAG,
   }
 }
 
+/// Compute remaining latency. We need this both to determine whether the
+/// overall schedule has become latency-limited and whether the instructions
+/// outside this zone are resource or latency limited.
+///
+/// The "dependent" latency is updated incrementally during scheduling as the
+/// max height/depth of scheduled nodes minus the cycles since it was
+/// scheduled:
+///   DLat = max (N.depth - (CurrCycle - N.ReadyCycle) for N in Zone
+///
+/// The "independent" latency is the max ready queue depth:
+///   ILat = max N.depth for N in Available|Pending
+///
+/// RemainingLatency is the greater of independent and dependent latency.
+///
+/// These computations are expensive, especially in DAGs with many edges, so
+/// only do them if necessary.
+static unsigned computeRemLatency(SchedBoundary &CurrZone) {
+  unsigned RemLatency = CurrZone.getDependentLatency();
+  RemLatency = std::max(RemLatency,
+                        CurrZone.findMaxLatency(CurrZone.Available.elements()));
+  RemLatency = std::max(RemLatency,
+                        CurrZone.findMaxLatency(CurrZone.Pending.elements()));
+  return RemLatency;
+}
+
+/// Returns true if the current cycle plus remaning latency is greater than
+/// the cirtical path in the scheduling region.
+bool GenericSchedulerBase::shouldReduceLatency(const CandPolicy &Policy,
+                                               SchedBoundary &CurrZone,
+                                               bool ComputeRemLatency,
+                                               unsigned &RemLatency) const {
+  // The current cycle is already greater than the critical path, so we are
+  // already latnecy limited and don't need to compute the remaining latency.
+  if (CurrZone.getCurrCycle() > Rem.CriticalPath)
+    return true;
+
+  // If we haven't scheduled anything yet, then we aren't latency limited.
+  if (CurrZone.getCurrCycle() == 0)
+    return false;
+
+  if (ComputeRemLatency)
+    RemLatency = computeRemLatency(CurrZone);
+
+  return RemLatency + CurrZone.getCurrCycle() > Rem.CriticalPath;
+}
+
 /// Set the CandPolicy given a scheduling zone given the current resources and
 /// latencies inside and outside the zone.
 void GenericSchedulerBase::setPolicy(CandPolicy &Policy, bool IsPostRA,
@@ -2406,46 +2463,32 @@ void GenericSchedulerBase::setPolicy(CandPolicy &Policy, bool IsPostRA,
   // inside and outside this zone. Potential stalls should be considered before
   // following this policy.
 
-  // Compute remaining latency. We need this both to determine whether the
-  // overall schedule has become latency-limited and whether the instructions
-  // outside this zone are resource or latency limited.
-  //
-  // The "dependent" latency is updated incrementally during scheduling as the
-  // max height/depth of scheduled nodes minus the cycles since it was
-  // scheduled:
-  //   DLat = max (N.depth - (CurrCycle - N.ReadyCycle) for N in Zone
-  //
-  // The "independent" latency is the max ready queue depth:
-  //   ILat = max N.depth for N in Available|Pending
-  //
-  // RemainingLatency is the greater of independent and dependent latency.
-  unsigned RemLatency = CurrZone.getDependentLatency();
-  RemLatency = std::max(RemLatency,
-                        CurrZone.findMaxLatency(CurrZone.Available.elements()));
-  RemLatency = std::max(RemLatency,
-                        CurrZone.findMaxLatency(CurrZone.Pending.elements()));
-
   // Compute the critical resource outside the zone.
   unsigned OtherCritIdx = 0;
   unsigned OtherCount =
     OtherZone ? OtherZone->getOtherResourceCount(OtherCritIdx) : 0;
 
   bool OtherResLimited = false;
-  if (SchedModel->hasInstrSchedModel())
+  unsigned RemLatency = 0;
+  bool RemLatencyComputed = false;
+  if (SchedModel->hasInstrSchedModel() && OtherCount != 0) {
+    RemLatency = computeRemLatency(CurrZone);
+    RemLatencyComputed = true;
     OtherResLimited = checkResourceLimit(SchedModel->getLatencyFactor(),
                                          OtherCount, RemLatency);
+  }
 
   // Schedule aggressively for latency in PostRA mode. We don't check for
   // acyclic latency during PostRA, and highly out-of-order processors will
   // skip PostRA scheduling.
-  if (!OtherResLimited) {
-    if (IsPostRA || (RemLatency + CurrZone.getCurrCycle() > Rem.CriticalPath)) {
-      Policy.ReduceLatency |= true;
-      LLVM_DEBUG(dbgs() << "  " << CurrZone.Available.getName()
-                        << " RemainingLatency " << RemLatency << " + "
-                        << CurrZone.getCurrCycle() << "c > CritPath "
-                        << Rem.CriticalPath << "\n");
-    }
+  if (!OtherResLimited &&
+      (IsPostRA || shouldReduceLatency(Policy, CurrZone, !RemLatencyComputed,
+                                       RemLatency))) {
+    Policy.ReduceLatency |= true;
+    LLVM_DEBUG(dbgs() << "  " << CurrZone.Available.getName()
+                      << " RemainingLatency " << RemLatency << " + "
+                      << CurrZone.getCurrCycle() << "c > CritPath "
+                      << Rem.CriticalPath << "\n");
   }
   // If the same resource is limiting inside and outside the zone, do nothing.
   if (CurrZone.getZoneCritResIdx() == OtherCritIdx)
@@ -2473,7 +2516,7 @@ const char *GenericSchedulerBase::getReasonStr(
   switch (Reason) {
   case NoCand:         return "NOCAND    ";
   case Only1:          return "ONLY1     ";
-  case PhysRegCopy:    return "PREG-COPY ";
+  case PhysReg:        return "PHYS-REG  ";
   case RegExcess:      return "REG-EXCESS";
   case RegCritical:    return "REG-CRIT  ";
   case Stall:          return "STALL     ";
@@ -2809,24 +2852,41 @@ unsigned getWeakLeft(const SUnit *SU, bool isTop) {
 /// copies which can be prescheduled. The rest (e.g. x86 MUL) could be bundled
 /// with the operation that produces or consumes the physreg. We'll do this when
 /// regalloc has support for parallel copies.
-int biasPhysRegCopy(const SUnit *SU, bool isTop) {
+int biasPhysReg(const SUnit *SU, bool isTop) {
   const MachineInstr *MI = SU->getInstr();
-  if (!MI->isCopy())
-    return 0;
 
-  unsigned ScheduledOper = isTop ? 1 : 0;
-  unsigned UnscheduledOper = isTop ? 0 : 1;
-  // If we have already scheduled the physreg produce/consumer, immediately
-  // schedule the copy.
-  if (TargetRegisterInfo::isPhysicalRegister(
-        MI->getOperand(ScheduledOper).getReg()))
-    return 1;
-  // If the physreg is at the boundary, defer it. Otherwise schedule it
-  // immediately to free the dependent. We can hoist the copy later.
-  bool AtBoundary = isTop ? !SU->NumSuccsLeft : !SU->NumPredsLeft;
-  if (TargetRegisterInfo::isPhysicalRegister(
-        MI->getOperand(UnscheduledOper).getReg()))
-    return AtBoundary ? -1 : 1;
+  if (MI->isCopy()) {
+    unsigned ScheduledOper = isTop ? 1 : 0;
+    unsigned UnscheduledOper = isTop ? 0 : 1;
+    // If we have already scheduled the physreg produce/consumer, immediately
+    // schedule the copy.
+    if (TargetRegisterInfo::isPhysicalRegister(
+            MI->getOperand(ScheduledOper).getReg()))
+      return 1;
+    // If the physreg is at the boundary, defer it. Otherwise schedule it
+    // immediately to free the dependent. We can hoist the copy later.
+    bool AtBoundary = isTop ? !SU->NumSuccsLeft : !SU->NumPredsLeft;
+    if (TargetRegisterInfo::isPhysicalRegister(
+            MI->getOperand(UnscheduledOper).getReg()))
+      return AtBoundary ? -1 : 1;
+  }
+
+  if (MI->isMoveImmediate()) {
+    // If we have a move immediate and all successors have been assigned, bias
+    // towards scheduling this later. Make sure all register defs are to
+    // physical registers.
+    bool DoBias = true;
+    for (const MachineOperand &Op : MI->defs()) {
+      if (Op.isReg() && !TargetRegisterInfo::isPhysicalRegister(Op.getReg())) {
+        DoBias = false;
+        break;
+      }
+    }
+
+    if (DoBias)
+      return isTop ? -1 : 1;
+  }
+
   return 0;
 }
 } // end namespace llvm
@@ -2868,7 +2928,7 @@ void GenericScheduler::initCandidate(SchedCandidate &Cand, SUnit *SU,
              << Cand.RPDelta.Excess.getUnitInc() << "\n");
 }
 
-/// Apply a set of heursitics to a new candidate. Heuristics are currently
+/// Apply a set of heuristics to a new candidate. Heuristics are currently
 /// hierarchical. This may be more efficient than a graduated cost model because
 /// we don't need to evaluate all aspects of the model for each node in the
 /// queue. But it's really done to make the heuristics easier to debug and
@@ -2887,9 +2947,9 @@ void GenericScheduler::tryCandidate(SchedCandidate &Cand,
     return;
   }
 
-  if (tryGreater(biasPhysRegCopy(TryCand.SU, TryCand.AtTop),
-                 biasPhysRegCopy(Cand.SU, Cand.AtTop),
-                 TryCand, Cand, PhysRegCopy))
+  // Bias PhysReg Defs and copies to their uses and defined respectively.
+  if (tryGreater(biasPhysReg(TryCand.SU, TryCand.AtTop),
+                 biasPhysReg(Cand.SU, Cand.AtTop), TryCand, Cand, PhysReg))
     return;
 
   // Avoid exceeding the target's limit.
@@ -3136,7 +3196,7 @@ SUnit *GenericScheduler::pickNode(bool &IsTopNode) {
   return SU;
 }
 
-void GenericScheduler::reschedulePhysRegCopies(SUnit *SU, bool isTop) {
+void GenericScheduler::reschedulePhysReg(SUnit *SU, bool isTop) {
   MachineBasicBlock::iterator InsertPos = SU->getInstr();
   if (!isTop)
     ++InsertPos;
@@ -3151,10 +3211,10 @@ void GenericScheduler::reschedulePhysRegCopies(SUnit *SU, bool isTop) {
     if (isTop ? DepSU->Succs.size() > 1 : DepSU->Preds.size() > 1)
       continue;
     MachineInstr *Copy = DepSU->getInstr();
-    if (!Copy->isCopy())
+    if (!Copy->isCopy() && !Copy->isMoveImmediate())
       continue;
     LLVM_DEBUG(dbgs() << "  Rescheduling physreg copy ";
-               Dep.getSUnit()->dump(DAG));
+               DAG->dumpNode(*Dep.getSUnit()));
     DAG->moveInstruction(Copy, InsertPos);
   }
 }
@@ -3165,18 +3225,18 @@ void GenericScheduler::reschedulePhysRegCopies(SUnit *SU, bool isTop) {
 /// does.
 ///
 /// FIXME: Eventually, we may bundle physreg copies rather than rescheduling
-/// them here. See comments in biasPhysRegCopy.
+/// them here. See comments in biasPhysReg.
 void GenericScheduler::schedNode(SUnit *SU, bool IsTopNode) {
   if (IsTopNode) {
     SU->TopReadyCycle = std::max(SU->TopReadyCycle, Top.getCurrCycle());
     Top.bumpNode(SU);
     if (SU->hasPhysRegUses)
-      reschedulePhysRegCopies(SU, true);
+      reschedulePhysReg(SU, true);
   } else {
     SU->BotReadyCycle = std::max(SU->BotReadyCycle, Bot.getCurrCycle());
     Bot.bumpNode(SU);
     if (SU->hasPhysRegDefs)
-      reschedulePhysRegCopies(SU, false);
+      reschedulePhysReg(SU, false);
   }
 }
 
@@ -3239,7 +3299,7 @@ void PostGenericScheduler::registerRoots() {
   }
 }
 
-/// Apply a set of heursitics to a new candidate for PostRA scheduling.
+/// Apply a set of heuristics to a new candidate for PostRA scheduling.
 ///
 /// \param Cand provides the policy and current best candidate.
 /// \param TryCand refers to the next SUnit candidate, otherwise uninitialized.

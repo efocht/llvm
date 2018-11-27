@@ -64,6 +64,11 @@ class Value;
     unsigned NumExitBlocks = std::numeric_limits<unsigned>::max();
     Type *RetTy;
 
+    // Suffix to use when creating extracted function (appended to the original
+    // function name + "."). If empty, the default is to use the entry block
+    // label, if non-empty, otherwise "extracted".
+    std::string Suffix;
+
   public:
     /// Create a code extractor for a sequence of blocks.
     ///
@@ -74,11 +79,12 @@ class Value;
     /// vararg functions can be extracted. This is safe, if all vararg handling
     /// code is extracted, including vastart. If AllowAlloca is true, then
     /// extraction of blocks containing alloca instructions would be possible,
-    /// however code extractor won't validate whether extraction is legal. 
+    /// however code extractor won't validate whether extraction is legal.
     CodeExtractor(ArrayRef<BasicBlock *> BBs, DominatorTree *DT = nullptr,
                   bool AggregateArgs = false, BlockFrequencyInfo *BFI = nullptr,
                   BranchProbabilityInfo *BPI = nullptr,
-                  bool AllowVarArgs = false, bool AllowAlloca = false);
+                  bool AllowVarArgs = false, bool AllowAlloca = false,
+                  std::string Suffix = "");
 
     /// Create a code extractor for a loop body.
     ///
@@ -86,7 +92,8 @@ class Value;
     /// block sequence of the loop.
     CodeExtractor(DominatorTree &DT, Loop &L, bool AggregateArgs = false,
                   BlockFrequencyInfo *BFI = nullptr,
-                  BranchProbabilityInfo *BPI = nullptr);
+                  BranchProbabilityInfo *BPI = nullptr,
+                  std::string Suffix = "");
 
     /// Perform the extraction, returning the new function.
     ///

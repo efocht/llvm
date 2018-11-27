@@ -20,6 +20,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/OptBisect.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/PassTimingInfo.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
@@ -142,8 +143,17 @@ void LPPassManager::getAnalysisUsage(AnalysisUsage &Info) const {
 void LPPassManager::markLoopAsDeleted(Loop &L) {
   assert((&L == CurrentLoop || CurrentLoop->contains(&L)) &&
          "Must not delete loop outside the current loop tree!");
-  if (&L == CurrentLoop)
+  // If this loop appears elsewhere within the queue, we also need to remove it
+  // there. However, we have to be careful to not remove the back of the queue
+  // as that is assumed to match the current loop.
+  assert(LQ.back() == CurrentLoop && "Loop queue back isn't the current loop!");
+  LQ.erase(std::remove(LQ.begin(), LQ.end(), &L), LQ.end());
+
+  if (&L == CurrentLoop) {
     CurrentLoopDeleted = true;
+    // Add this loop back onto the back of the queue to preserve our invariants.
+    LQ.push_back(&L);
+  }
 }
 
 /// run - Execute all of the passes scheduled for execution.  Keep track of
@@ -184,6 +194,14 @@ bool LPPassManager::runOnFunction(Function &F) {
   }
 
   // Walk Loops
+  unsigned InstrCount, FunctionSize = 0;
+  StringMap<std::pair<unsigned, unsigned>> FunctionToInstrCount;
+  bool EmitICRemark = M.shouldEmitInstrCountChangedRemark();
+  // Collect the initial size of the module and the function we're looking at.
+  if (EmitICRemark) {
+    InstrCount = initSizeRemarkInfo(M, FunctionToInstrCount);
+    FunctionSize = F.getInstructionCount();
+  }
   while (!LQ.empty()) {
     CurrentLoopDeleted = false;
     CurrentLoop = LQ.back();
@@ -201,9 +219,20 @@ bool LPPassManager::runOnFunction(Function &F) {
       {
         PassManagerPrettyStackEntry X(P, *CurrentLoop->getHeader());
         TimeRegion PassTimer(getPassTimer(P));
-        unsigned InstrCount = initSizeRemarkInfo(M);
         Changed |= P->runOnLoop(CurrentLoop, *this);
-        emitInstrCountChangedRemark(P, M, InstrCount);
+        if (EmitICRemark) {
+          unsigned NewSize = F.getInstructionCount();
+          // Update the size of the function, emit a remark, and update the
+          // size of the module.
+          if (NewSize != FunctionSize) {
+            int64_t Delta = static_cast<int64_t>(NewSize) -
+                            static_cast<int64_t>(FunctionSize);
+            emitInstrCountChangedRemark(P, M, Delta, InstrCount,
+                                        FunctionToInstrCount, &F);
+            InstrCount = static_cast<int64_t>(InstrCount) + Delta;
+            FunctionSize = NewSize;
+          }
+        }
       }
 
       if (Changed)

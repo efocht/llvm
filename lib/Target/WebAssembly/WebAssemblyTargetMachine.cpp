@@ -51,12 +51,14 @@ extern "C" void LLVMInitializeWebAssemblyTarget() {
 
   // Register backend passes
   auto &PR = *PassRegistry::getPassRegistry();
+  initializeWebAssemblyAddMissingPrototypesPass(PR);
   initializeWebAssemblyLowerEmscriptenEHSjLjPass(PR);
   initializeLowerGlobalDtorsPass(PR);
   initializeFixFunctionBitcastsPass(PR);
   initializeOptimizeReturnedPass(PR);
   initializeWebAssemblyArgumentMovePass(PR);
   initializeWebAssemblySetP2AlignOperandsPass(PR);
+  initializeWebAssemblyEHRestoreStackPointerPass(PR);
   initializeWebAssemblyReplacePhysRegsPass(PR);
   initializeWebAssemblyPrepareForLiveIntervalsPass(PR);
   initializeWebAssemblyOptimizeLiveIntervalsPass(PR);
@@ -65,7 +67,8 @@ extern "C" void LLVMInitializeWebAssemblyTarget() {
   initializeWebAssemblyRegColoringPass(PR);
   initializeWebAssemblyExplicitLocalsPass(PR);
   initializeWebAssemblyFixIrreducibleControlFlowPass(PR);
-  initializeWebAssemblyExceptionPreparePass(PR);
+  initializeWebAssemblyLateEHPreparePass(PR);
+  initializeWebAssemblyExceptionInfoPass(PR);
   initializeWebAssemblyCFGSortPass(PR);
   initializeWebAssemblyCFGStackifyPass(PR);
   initializeWebAssemblyLowerBrUnlessPass(PR);
@@ -95,11 +98,7 @@ WebAssemblyTargetMachine::WebAssemblyTargetMachine(
                                          : "e-m:e-p:32:32-i64:64-n32:64-S128",
                         TT, CPU, FS, Options, getEffectiveRelocModel(RM),
                         CM ? *CM : CodeModel::Large, OL),
-      TLOF(TT.isOSBinFormatELF() ?
-              static_cast<TargetLoweringObjectFile*>(
-                  new WebAssemblyTargetObjectFileELF()) :
-              static_cast<TargetLoweringObjectFile*>(
-                  new WebAssemblyTargetObjectFile())) {
+      TLOF(new WebAssemblyTargetObjectFile()) {
   // WebAssembly type-checks instructions, but a noreturn function with a return
   // type that doesn't match the context will cause a check failure. So we lower
   // LLVM 'unreachable' to ISD::TRAP and then lower that to WebAssembly's
@@ -108,11 +107,9 @@ WebAssemblyTargetMachine::WebAssemblyTargetMachine(
 
   // WebAssembly treats each function as an independent unit. Force
   // -ffunction-sections, effectively, so that we can emit them independently.
-  if (!TT.isOSBinFormatELF()) {
-    this->Options.FunctionSections = true;
-    this->Options.DataSections = true;
-    this->Options.UniqueSectionNames = true;
-  }
+  this->Options.FunctionSections = true;
+  this->Options.DataSections = true;
+  this->Options.UniqueSectionNames = true;
 
   initAsmInfo();
 
@@ -153,7 +150,7 @@ class StripThreadLocal final : public ModulePass {
   // pass just converts all GlobalVariables to NotThreadLocal
   static char ID;
 
- public:
+public:
   StripThreadLocal() : ModulePass(ID) {}
   bool runOnModule(Module &M) override {
     for (auto &GV : M.globals())
@@ -212,6 +209,9 @@ void WebAssemblyPassConfig::addIRPasses() {
     // control specifically what gets lowered.
     addPass(createAtomicExpandPass());
   }
+
+  // Add signatures to prototype-less function declarations
+  addPass(createWebAssemblyAddMissingPrototypes());
 
   // Lower .llvm.global_dtors into .llvm_global_ctors with __cxa_atexit calls.
   addPass(createWebAssemblyLowerGlobalDtors());
@@ -281,6 +281,9 @@ void WebAssemblyPassConfig::addPostRegAlloc() {
 void WebAssemblyPassConfig::addPreEmitPass() {
   TargetPassConfig::addPreEmitPass();
 
+  // Restore __stack_pointer global after an exception is thrown.
+  addPass(createWebAssemblyEHRestoreStackPointer());
+
   // Now that we have a prologue and epilogue and all frame indices are
   // rewritten, eliminate SP and FP. This allows them to be stackified,
   // colored, and numbered with the rest of the registers.
@@ -322,7 +325,7 @@ void WebAssemblyPassConfig::addPreEmitPass() {
   addPass(createWebAssemblyExplicitLocals());
 
   // Do various transformations for exception handling
-  addPass(createWebAssemblyExceptionPrepare());
+  addPass(createWebAssemblyLateEHPrepare());
 
   // Sort the blocks of the CFG into topological order, a prerequisite for
   // BLOCK and LOOP markers.

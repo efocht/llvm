@@ -62,6 +62,7 @@ public:
   using Phdr = Elf_Phdr_Impl<ELFType<E, Is64>>;
   using Rel = Elf_Rel_Impl<ELFType<E, Is64>, false>;
   using Rela = Elf_Rel_Impl<ELFType<E, Is64>, true>;
+  using Relr = packed<uint>;
   using Verdef = Elf_Verdef_Impl<ELFType<E, Is64>>;
   using Verdaux = Elf_Verdaux_Impl<ELFType<E, Is64>>;
   using Verneed = Elf_Verneed_Impl<ELFType<E, Is64>>;
@@ -79,6 +80,7 @@ public:
   using SymRange = ArrayRef<Sym>;
   using RelRange = ArrayRef<Rel>;
   using RelaRange = ArrayRef<Rela>;
+  using RelrRange = ArrayRef<Relr>;
   using PhdrRange = ArrayRef<Phdr>;
 
   using Half = packed<uint16_t>;
@@ -603,13 +605,12 @@ public:
   }
 
   /// Get the note's descriptor.
-  ArrayRef<Elf_Word> getDesc() const {
+  ArrayRef<uint8_t> getDesc() const {
     if (!Nhdr.n_descsz)
-      return ArrayRef<Elf_Word>();
-    return ArrayRef<Elf_Word>(
-        reinterpret_cast<const Elf_Word *>(
-            reinterpret_cast<const uint8_t *>(&Nhdr) + sizeof(Nhdr) +
-            alignTo<Elf_Nhdr_Impl<ELFT>::Align>(Nhdr.n_namesz)),
+      return ArrayRef<uint8_t>();
+    return ArrayRef<uint8_t>(
+        reinterpret_cast<const uint8_t *>(&Nhdr) + sizeof(Nhdr) +
+          alignTo<Elf_Nhdr_Impl<ELFT>::Align>(Nhdr.n_namesz),
         Nhdr.n_descsz);
   }
 

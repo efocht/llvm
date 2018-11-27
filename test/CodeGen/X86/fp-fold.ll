@@ -17,15 +17,30 @@ define float @fadd_zero(float %x) {
 }
 
 define float @fadd_negzero(float %x) {
-; STRICT-LABEL: fadd_negzero:
-; STRICT:       # %bb.0:
-; STRICT-NEXT:    addss {{.*}}(%rip), %xmm0
-; STRICT-NEXT:    retq
-;
-; UNSAFE-LABEL: fadd_negzero:
-; UNSAFE:       # %bb.0:
-; UNSAFE-NEXT:    retq
+; ANY-LABEL: fadd_negzero:
+; ANY:       # %bb.0:
+; ANY-NEXT:    retq
   %r = fadd float %x, -0.0
+  ret float %r
+}
+
+define float @fadd_produce_zero(float %x) {
+; ANY-LABEL: fadd_produce_zero:
+; ANY:       # %bb.0:
+; ANY-NEXT:    xorps %xmm0, %xmm0
+; ANY-NEXT:    retq
+  %neg = fsub nsz float 0.0, %x
+  %r = fadd nnan float %neg, %x
+  ret float %r
+}
+
+define float @fadd_reassociate(float %x) {
+; ANY-LABEL: fadd_reassociate:
+; ANY:       # %bb.0:
+; ANY-NEXT:    addss {{.*}}(%rip), %xmm0
+; ANY-NEXT:    retq
+  %sum = fadd float %x, 8.0
+  %r = fadd reassoc nsz float %sum, 12.0
   ret float %r
 }
 
@@ -58,7 +73,7 @@ define float @fsub_self(float %x) {
 ; ANY:       # %bb.0:
 ; ANY-NEXT:    xorps %xmm0, %xmm0
 ; ANY-NEXT:    retq
-  %r = fsub nnan float %x, %x 
+  %r = fsub nnan float %x, %x
   ret float %r
 }
 
@@ -71,6 +86,76 @@ define float @fsub_neg_x_y(float %x, float %y) {
   %neg = fsub nsz float 0.0, %x
   %r = fadd nsz float %neg, %y
   ret float %r
+}
+
+define float @fsub_neg_y(float %x, float %y) {
+; ANY-LABEL: fsub_neg_y:
+; ANY:       # %bb.0:
+; ANY-NEXT:    mulss {{.*}}(%rip), %xmm0
+; ANY-NEXT:    retq
+  %mul = fmul float %x, 5.0
+  %add = fadd float %mul, %y
+  %r = fsub nsz reassoc float %y, %add
+  ret float %r
+}
+
+define float @fsub_neg_y_commute(float %x, float %y) {
+; ANY-LABEL: fsub_neg_y_commute:
+; ANY:       # %bb.0:
+; ANY-NEXT:    mulss {{.*}}(%rip), %xmm0
+; ANY-NEXT:    retq
+  %mul = fmul float %x, 5.0
+  %add = fadd float %y, %mul
+  %r = fsub nsz reassoc float %y, %add
+  ret float %r
+}
+; Y - (X + Y) --> -X
+
+define float @fsub_fadd_common_op_fneg(float %x, float %y) {
+; ANY-LABEL: fsub_fadd_common_op_fneg:
+; ANY:       # %bb.0:
+; ANY-NEXT:    xorps {{.*}}(%rip), %xmm0
+; ANY-NEXT:    retq
+  %a = fadd float %x, %y
+  %r = fsub reassoc nsz float %y, %a
+  ret float %r
+}
+
+; Y - (X + Y) --> -X
+
+define <4 x float> @fsub_fadd_common_op_fneg_vec(<4 x float> %x, <4 x float> %y) {
+; ANY-LABEL: fsub_fadd_common_op_fneg_vec:
+; ANY:       # %bb.0:
+; ANY-NEXT:    xorps {{.*}}(%rip), %xmm0
+; ANY-NEXT:    retq
+  %a = fadd <4 x float> %x, %y
+  %r = fsub nsz reassoc <4 x float> %y, %a
+  ret <4 x float> %r
+}
+
+; Y - (Y + X) --> -X
+; Commute operands of the 'add'.
+
+define float @fsub_fadd_common_op_fneg_commute(float %x, float %y) {
+; ANY-LABEL: fsub_fadd_common_op_fneg_commute:
+; ANY:       # %bb.0:
+; ANY-NEXT:    xorps {{.*}}(%rip), %xmm0
+; ANY-NEXT:    retq
+  %a = fadd float %y, %x
+  %r = fsub reassoc nsz float %y, %a
+  ret float %r
+}
+
+; Y - (Y + X) --> -X
+
+define <4 x float> @fsub_fadd_common_op_fneg_commute_vec(<4 x float> %x, <4 x float> %y) {
+; ANY-LABEL: fsub_fadd_common_op_fneg_commute_vec:
+; ANY:       # %bb.0:
+; ANY-NEXT:    xorps {{.*}}(%rip), %xmm0
+; ANY-NEXT:    retq
+  %a = fadd <4 x float> %y, %x
+  %r = fsub reassoc nsz <4 x float> %y, %a
+  ret <4 x float> %r
 }
 
 define float @fsub_negzero(float %x) {

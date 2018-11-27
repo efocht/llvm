@@ -865,7 +865,7 @@ mergeOperations(MachineBasicBlock::iterator MBBIStartPos,
 
     // Merge MMOs from memory operations in the common block.
     if (MBBICommon->mayLoad() || MBBICommon->mayStore())
-      MBBICommon->setMemRefs(MBBICommon->mergeMemRefsWith(*MBBI));
+      MBBICommon->cloneMergedMemRefs(*MBB->getParent(), {&*MBBICommon, &*MBBI});
     // Drop undef flags if they aren't present in all merged instructions.
     for (unsigned I = 0, E = MBBICommon->getNumOperands(); I != E; ++I) {
       MachineOperand &MO = MBBICommon->getOperand(I);
@@ -921,11 +921,12 @@ void BranchFolder::mergeCommonTails(unsigned commonTailIndex) {
   if (UpdateLiveIns) {
     LivePhysRegs NewLiveIns(*TRI);
     computeLiveIns(NewLiveIns, *MBB);
+    LiveRegs.init(*TRI);
 
     // The flag merging may lead to some register uses no longer using the
     // <undef> flag, add IMPLICIT_DEFs in the predecessors as necessary.
     for (MachineBasicBlock *Pred : MBB->predecessors()) {
-      LiveRegs.init(*TRI);
+      LiveRegs.clear();
       LiveRegs.addLiveOuts(*Pred);
       MachineBasicBlock::iterator InsertBefore = Pred->getFirstTerminator();
       for (unsigned Reg : NewLiveIns) {

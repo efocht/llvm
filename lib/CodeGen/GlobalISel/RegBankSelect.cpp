@@ -105,6 +105,7 @@ void RegBankSelect::getAnalysisUsage(AnalysisUsage &AU) const {
     AU.addRequired<MachineBranchProbabilityInfo>();
   }
   AU.addRequired<TargetPassConfig>();
+  getSelectionDAGFallbackAnalysisUsage(AU);
   MachineFunctionPass::getAnalysisUsage(AU);
 }
 
@@ -139,7 +140,7 @@ bool RegBankSelect::repairReg(
     return false;
   assert(ValMapping.NumBreakDowns == 1 && "Not yet implemented");
   // An empty range of new register means no repairing.
-  assert(NewVRegs.begin() != NewVRegs.end() && "We should not have to repair");
+  assert(!empty(NewVRegs) && "We should not have to repair");
 
   // Assume we are repairing a use and thus, the original reg will be
   // the source of the repairing.
@@ -474,7 +475,7 @@ RegBankSelect::MappingCost RegBankSelect::computeMapping(
 
     // This is an impossible to repair cost.
     if (RepairCost == std::numeric_limits<unsigned>::max())
-      continue;
+      return MappingCost::ImpossibleCost();
 
     // Bias used for splitting: 5%.
     const uint64_t PercentageForBias = 5;

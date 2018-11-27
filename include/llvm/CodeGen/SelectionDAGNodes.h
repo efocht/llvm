@@ -672,6 +672,12 @@ public:
       case ISD::STRICT_FLOG2:
       case ISD::STRICT_FRINT:
       case ISD::STRICT_FNEARBYINT:
+      case ISD::STRICT_FMAXNUM:
+      case ISD::STRICT_FMINNUM:
+      case ISD::STRICT_FCEIL:
+      case ISD::STRICT_FFLOOR:
+      case ISD::STRICT_FROUND:
+      case ISD::STRICT_FTRUNC:
         return true;
     }
   }
@@ -1246,7 +1252,7 @@ protected:
 
 public:
   MemSDNode(unsigned Opc, unsigned Order, const DebugLoc &dl, SDVTList VTs,
-            EVT MemoryVT, MachineMemOperand *MMO);
+            EVT memvt, MachineMemOperand *MMO);
 
   bool readMem() const { return MMO->isLoad(); }
   bool writeMem() const { return MMO->isStore(); }
@@ -1498,9 +1504,8 @@ class ConstantSDNode : public SDNode {
 
   const ConstantInt *Value;
 
-  ConstantSDNode(bool isTarget, bool isOpaque, const ConstantInt *val,
-                 const DebugLoc &DL, EVT VT)
-      : SDNode(isTarget ? ISD::TargetConstant : ISD::Constant, 0, DL,
+  ConstantSDNode(bool isTarget, bool isOpaque, const ConstantInt *val, EVT VT)
+      : SDNode(isTarget ? ISD::TargetConstant : ISD::Constant, 0, DebugLoc(),
                getSDVTList(VT)),
         Value(val) {
     ConstantSDNodeBits.IsOpaque = isOpaque;
@@ -1536,10 +1541,9 @@ class ConstantFPSDNode : public SDNode {
 
   const ConstantFP *Value;
 
-  ConstantFPSDNode(bool isTarget, const ConstantFP *val, const DebugLoc &DL,
-                   EVT VT)
-      : SDNode(isTarget ? ISD::TargetConstantFP : ISD::ConstantFP, 0, DL,
-               getSDVTList(VT)),
+  ConstantFPSDNode(bool isTarget, const ConstantFP *val, EVT VT)
+      : SDNode(isTarget ? ISD::TargetConstantFP : ISD::ConstantFP, 0,
+               DebugLoc(), getSDVTList(VT)),
         Value(val) {}
 
 public:
@@ -1591,15 +1595,23 @@ bool isAllOnesConstant(SDValue V);
 /// Returns true if \p V is a constant integer one.
 bool isOneConstant(SDValue V);
 
+/// Return the non-bitcasted source operand of \p V if it exists.
+/// If \p V is not a bitcasted value, it is returned as-is.
+SDValue peekThroughBitcasts(SDValue V);
+
+/// Return the non-bitcasted and one-use source operand of \p V if it exists.
+/// If \p V is not a bitcasted one-use value, it is returned as-is.
+SDValue peekThroughOneUseBitcasts(SDValue V);
+
 /// Returns true if \p V is a bitwise not operation. Assumes that an all ones
 /// constant is canonicalized to be operand 1.
 bool isBitwiseNot(SDValue V);
 
 /// Returns the SDNode if it is a constant splat BuildVector or constant int.
-ConstantSDNode *isConstOrConstSplat(SDValue V);
+ConstantSDNode *isConstOrConstSplat(SDValue N, bool AllowUndefs = false);
 
 /// Returns the SDNode if it is a constant splat BuildVector or constant float.
-ConstantFPSDNode *isConstOrConstSplatFP(SDValue V);
+ConstantFPSDNode *isConstOrConstSplatFP(SDValue N, bool AllowUndefs = false);
 
 class GlobalAddressSDNode : public SDNode {
   friend class SelectionDAG;
@@ -1610,7 +1622,7 @@ class GlobalAddressSDNode : public SDNode {
 
   GlobalAddressSDNode(unsigned Opc, unsigned Order, const DebugLoc &DL,
                       const GlobalValue *GA, EVT VT, int64_t o,
-                      unsigned char TargetFlags);
+                      unsigned char TF);
 
 public:
   const GlobalValue *getGlobal() const { return TheGlobal; }
@@ -2115,12 +2127,15 @@ public:
                         MachineMemOperand *MMO)
       : MemSDNode(NodeTy, Order, dl, VTs, MemVT, MMO) {}
 
-  // In the both nodes address is Op1, mask is Op2:
-  // MaskedLoadSDNode (Chain, ptr, mask, src0), src0 is a passthru value
-  // MaskedStoreSDNode (Chain, ptr, mask, data)
+  // MaskedLoadSDNode (Chain, ptr, mask, passthru)
+  // MaskedStoreSDNode (Chain, data, ptr, mask)
   // Mask is a vector of i1 elements
-  const SDValue &getBasePtr() const { return getOperand(1); }
-  const SDValue &getMask() const    { return getOperand(2); }
+  const SDValue &getBasePtr() const {
+    return getOperand(getOpcode() == ISD::MLOAD ? 1 : 2);
+  }
+  const SDValue &getMask() const {
+    return getOperand(getOpcode() == ISD::MLOAD ? 2 : 3);
+  }
 
   static bool classof(const SDNode *N) {
     return N->getOpcode() == ISD::MLOAD ||
@@ -2145,7 +2160,10 @@ public:
     return static_cast<ISD::LoadExtType>(LoadSDNodeBits.ExtTy);
   }
 
-  const SDValue &getSrc0() const { return getOperand(3); }
+  const SDValue &getBasePtr() const { return getOperand(1); }
+  const SDValue &getMask() const    { return getOperand(2); }
+  const SDValue &getPassThru() const { return getOperand(3); }
+
   static bool classof(const SDNode *N) {
     return N->getOpcode() == ISD::MLOAD;
   }
@@ -2177,7 +2195,9 @@ public:
   /// memory at base_addr.
   bool isCompressingStore() const { return StoreSDNodeBits.IsCompressing; }
 
-  const SDValue &getValue() const { return getOperand(3); }
+  const SDValue &getValue() const   { return getOperand(1); }
+  const SDValue &getBasePtr() const { return getOperand(2); }
+  const SDValue &getMask() const    { return getOperand(3); }
 
   static bool classof(const SDNode *N) {
     return N->getOpcode() == ISD::MSTORE;
@@ -2203,7 +2223,6 @@ public:
   const SDValue &getBasePtr() const { return getOperand(3); }
   const SDValue &getIndex()   const { return getOperand(4); }
   const SDValue &getMask()    const { return getOperand(2); }
-  const SDValue &getValue()   const { return getOperand(1); }
   const SDValue &getScale()   const { return getOperand(5); }
 
   static bool classof(const SDNode *N) {
@@ -2222,6 +2241,8 @@ public:
                      EVT MemVT, MachineMemOperand *MMO)
       : MaskedGatherScatterSDNode(ISD::MGATHER, Order, dl, VTs, MemVT, MMO) {}
 
+  const SDValue &getPassThru() const { return getOperand(1); }
+
   static bool classof(const SDNode *N) {
     return N->getOpcode() == ISD::MGATHER;
   }
@@ -2237,6 +2258,8 @@ public:
                       EVT MemVT, MachineMemOperand *MMO)
       : MaskedGatherScatterSDNode(ISD::MSCATTER, Order, dl, VTs, MemVT, MMO) {}
 
+  const SDValue &getValue() const { return getOperand(1); }
+
   static bool classof(const SDNode *N) {
     return N->getOpcode() == ISD::MSCATTER;
   }
@@ -2245,32 +2268,60 @@ public:
 /// An SDNode that represents everything that will be needed
 /// to construct a MachineInstr. These nodes are created during the
 /// instruction selection proper phase.
+///
+/// Note that the only supported way to set the `memoperands` is by calling the
+/// `SelectionDAG::setNodeMemRefs` function as the memory management happens
+/// inside the DAG rather than in the node.
 class MachineSDNode : public SDNode {
-public:
-  using mmo_iterator = MachineMemOperand **;
-
 private:
   friend class SelectionDAG;
 
   MachineSDNode(unsigned Opc, unsigned Order, const DebugLoc &DL, SDVTList VTs)
       : SDNode(Opc, Order, DL, VTs) {}
 
-  /// Memory reference descriptions for this instruction.
-  mmo_iterator MemRefs = nullptr;
-  mmo_iterator MemRefsEnd = nullptr;
+  // We use a pointer union between a single `MachineMemOperand` pointer and
+  // a pointer to an array of `MachineMemOperand` pointers. This is null when
+  // the number of these is zero, the single pointer variant used when the
+  // number is one, and the array is used for larger numbers.
+  //
+  // The array is allocated via the `SelectionDAG`'s allocator and so will
+  // always live until the DAG is cleaned up and doesn't require ownership here.
+  //
+  // We can't use something simpler like `TinyPtrVector` here because `SDNode`
+  // subclasses aren't managed in a conforming C++ manner. See the comments on
+  // `SelectionDAG::MorphNodeTo` which details what all goes on, but the
+  // constraint here is that these don't manage memory with their constructor or
+  // destructor and can be initialized to a good state even if they start off
+  // uninitialized.
+  PointerUnion<MachineMemOperand *, MachineMemOperand **> MemRefs = {};
+
+  // Note that this could be folded into the above `MemRefs` member if doing so
+  // is advantageous at some point. We don't need to store this in most cases.
+  // However, at the moment this doesn't appear to make the allocation any
+  // smaller and makes the code somewhat simpler to read.
+  int NumMemRefs = 0;
 
 public:
-  mmo_iterator memoperands_begin() const { return MemRefs; }
-  mmo_iterator memoperands_end() const { return MemRefsEnd; }
-  bool memoperands_empty() const { return MemRefsEnd == MemRefs; }
+  using mmo_iterator = ArrayRef<MachineMemOperand *>::const_iterator;
 
-  /// Assign this MachineSDNodes's memory reference descriptor
-  /// list. This does not transfer ownership.
-  void setMemRefs(mmo_iterator NewMemRefs, mmo_iterator NewMemRefsEnd) {
-    for (mmo_iterator MMI = NewMemRefs, MME = NewMemRefsEnd; MMI != MME; ++MMI)
-      assert(*MMI && "Null mem ref detected!");
-    MemRefs = NewMemRefs;
-    MemRefsEnd = NewMemRefsEnd;
+  ArrayRef<MachineMemOperand *> memoperands() const {
+    // Special case the common cases.
+    if (NumMemRefs == 0)
+      return {};
+    if (NumMemRefs == 1)
+      return makeArrayRef(MemRefs.getAddrOfPtr1(), 1);
+
+    // Otherwise we have an actual array.
+    return makeArrayRef(MemRefs.get<MachineMemOperand **>(), NumMemRefs);
+  }
+  mmo_iterator memoperands_begin() const { return memoperands().begin(); }
+  mmo_iterator memoperands_end() const { return memoperands().end(); }
+  bool memoperands_empty() const { return memoperands().empty(); }
+
+  /// Clear out the memory reference descriptor list.
+  void clearMemRefs() {
+    MemRefs = nullptr;
+    NumMemRefs = 0;
   }
 
   static bool classof(const SDNode *N) {
@@ -2405,6 +2456,18 @@ namespace ISD {
   inline bool isUNINDEXEDStore(const SDNode *N) {
     return isa<StoreSDNode>(N) &&
       cast<StoreSDNode>(N)->getAddressingMode() == ISD::UNINDEXED;
+  }
+
+  /// Return true if the node is a math/logic binary operator. This corresponds
+  /// to the IR function of the same name.
+  inline bool isBinaryOp(const SDNode *N) {
+    auto Op = N->getOpcode();
+    return (Op == ISD::ADD || Op == ISD::SUB || Op == ISD::MUL ||
+            Op == ISD::AND || Op == ISD::OR || Op == ISD::XOR ||
+            Op == ISD::SHL || Op == ISD::SRL || Op == ISD::SRA ||
+            Op == ISD::SDIV || Op == ISD::UDIV || Op == ISD::SREM ||
+            Op == ISD::UREM || Op == ISD::FADD || Op == ISD::FSUB ||
+            Op == ISD::FMUL || Op == ISD::FDIV || Op == ISD::FREM);
   }
 
   /// Attempt to match a unary predicate against a scalar/splat constant or

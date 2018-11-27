@@ -564,11 +564,10 @@ public:
   /// Print the information about the memory accesses in the loop.
   void print(raw_ostream &OS, unsigned Depth = 0) const;
 
-  /// Checks existence of store to invariant address inside loop.
-  /// If the loop has any store to invariant address, then it returns true,
-  /// else returns false.
-  bool hasStoreToLoopInvariantAddress() const {
-    return StoreToLoopInvariantAddress;
+  /// If the loop has multiple stores to an invariant address, then
+  /// return true, else return false.
+  bool hasMultipleStoresToLoopInvariantAddress() const {
+    return HasMultipleStoresToLoopInvariantAddress;
   }
 
   /// Used to add runtime SCEV checks. Simplifies SCEV expressions and converts
@@ -621,9 +620,8 @@ private:
   /// Cache the result of analyzeLoop.
   bool CanVecMem;
 
-  /// Indicator for storing to uniform addresses.
-  /// If a loop has write to a loop invariant address then it should be true.
-  bool StoreToLoopInvariantAddress;
+  /// Indicator that there are multiple stores to a uniform address.
+  bool HasMultipleStoresToLoopInvariantAddress;
 
   /// The diagnostics report generated for the analysis.  E.g. why we
   /// couldn't analyze the loop.
@@ -682,7 +680,7 @@ bool sortPtrAccesses(ArrayRef<Value *> VL, const DataLayout &DL,
                      SmallVectorImpl<unsigned> &SortedIndices);
 
 /// Returns true if the memory operations \p A and \p B are consecutive.
-/// This is a simple API that does not depend on the analysis pass. 
+/// This is a simple API that does not depend on the analysis pass.
 bool isConsecutiveAccess(Value *A, Value *B, const DataLayout &DL,
                          ScalarEvolution &SE, bool CheckType = true);
 
@@ -734,7 +732,7 @@ private:
 /// accesses of a loop.
 ///
 /// It runs the analysis for a loop on demand.  This can be initiated by
-/// querying the loop access info via AM.getResult<LoopAccessAnalysis>. 
+/// querying the loop access info via AM.getResult<LoopAccessAnalysis>.
 /// getResult return a LoopAccessInfo object.  See this class for the
 /// specifics of what information is provided.
 class LoopAccessAnalysis

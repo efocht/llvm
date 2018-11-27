@@ -431,22 +431,202 @@ declare <8 x i32> @llvm.masked.load.v8i32.p0v8i32(<8 x i32>*, i32, <8 x i1>, <8 
 declare double @llvm.powi.f64(double, i32)
 declare <2 x double> @llvm.powi.v2f64(<2 x double>, i32)
 
-define double @constant_fold_powi() nounwind uwtable ssp {
+define double @constant_fold_powi() {
 ; CHECK-LABEL: @constant_fold_powi(
-; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    ret double 9.000000e+00
 ;
-entry:
-  %0 = call double @llvm.powi.f64(double 3.00000e+00, i32 2)
-  ret double %0
+  %t0 = call double @llvm.powi.f64(double 3.00000e+00, i32 2)
+  ret double %t0
 }
 
-define <2 x double> @constant_fold_powi_vec() nounwind uwtable ssp {
+define <2 x double> @constant_fold_powi_vec() {
 ; CHECK-LABEL: @constant_fold_powi_vec(
-; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    ret <2 x double> <double 9.000000e+00, double 2.500000e+01>
 ;
-entry:
-  %0 = call <2 x double> @llvm.powi.v2f64(<2 x double> <double 3.00000e+00, double 5.00000e+00>, i32 2)
-  ret <2 x double> %0
+  %t0 = call <2 x double> @llvm.powi.v2f64(<2 x double> <double 3.00000e+00, double 5.00000e+00>, i32 2)
+  ret <2 x double> %t0
 }
+
+declare i8 @llvm.fshl.i8(i8, i8, i8)
+declare i9 @llvm.fshr.i9(i9, i9, i9)
+declare <2 x i7> @llvm.fshl.v2i7(<2 x i7>, <2 x i7>, <2 x i7>)
+declare <2 x i8> @llvm.fshr.v2i8(<2 x i8>, <2 x i8>, <2 x i8>)
+
+define i8 @fshl_no_shift(i8 %x, i8 %y) {
+; CHECK-LABEL: @fshl_no_shift(
+; CHECK-NEXT:    ret i8 [[X:%.*]]
+;
+  %z = call i8 @llvm.fshl.i8(i8 %x, i8 %y, i8 0)
+  ret i8 %z
+}
+
+define i9 @fshr_no_shift(i9 %x, i9 %y) {
+; CHECK-LABEL: @fshr_no_shift(
+; CHECK-NEXT:    ret i9 [[Y:%.*]]
+;
+  %z = call i9 @llvm.fshr.i9(i9 %x, i9 %y, i9 0)
+  ret i9 %z
+}
+
+define i8 @fshl_no_shift_modulo_bitwidth(i8 %x, i8 %y) {
+; CHECK-LABEL: @fshl_no_shift_modulo_bitwidth(
+; CHECK-NEXT:    ret i8 [[X:%.*]]
+;
+  %z = call i8 @llvm.fshl.i8(i8 %x, i8 %y, i8 40)
+  ret i8 %z
+}
+
+define i9 @fshr_no_shift_modulo_bitwidth(i9 %x, i9 %y) {
+; CHECK-LABEL: @fshr_no_shift_modulo_bitwidth(
+; CHECK-NEXT:    ret i9 [[Y:%.*]]
+;
+  %z = call i9 @llvm.fshr.i9(i9 %x, i9 %y, i9 189)
+  ret i9 %z
+}
+
+define <2 x i7> @fshl_no_shift_modulo_bitwidth_splat(<2 x i7> %x, <2 x i7> %y) {
+; CHECK-LABEL: @fshl_no_shift_modulo_bitwidth_splat(
+; CHECK-NEXT:    ret <2 x i7> [[X:%.*]]
+;
+  %z = call <2 x i7> @llvm.fshl.v2i7(<2 x i7> %x, <2 x i7> %y, <2 x i7> <i7 21, i7 21>)
+  ret <2 x i7> %z
+}
+
+define <2 x i8> @fshr_no_shift_modulo_bitwidth_splat(<2 x i8> %x, <2 x i8> %y) {
+; CHECK-LABEL: @fshr_no_shift_modulo_bitwidth_splat(
+; CHECK-NEXT:    ret <2 x i8> [[Y:%.*]]
+;
+  %z = call <2 x i8> @llvm.fshr.v2i8(<2 x i8> %x, <2 x i8> %y, <2 x i8> <i8 72, i8 72>)
+  ret <2 x i8> %z
+}
+
+define i8 @fshl_zero_shift_guard(i8 %x, i8 %y, i8 %sh) {
+; CHECK-LABEL: @fshl_zero_shift_guard(
+; CHECK-NEXT:    [[C:%.*]] = icmp eq i8 [[SH:%.*]], 0
+; CHECK-NEXT:    [[F:%.*]] = call i8 @llvm.fshl.i8(i8 [[X:%.*]], i8 [[Y:%.*]], i8 [[SH]])
+; CHECK-NEXT:    [[S:%.*]] = select i1 [[C]], i8 [[X]], i8 [[F]]
+; CHECK-NEXT:    ret i8 [[S]]
+;
+  %c = icmp eq i8 %sh, 0
+  %f = call i8 @llvm.fshl.i8(i8 %x, i8 %y, i8 %sh)
+  %s = select i1 %c, i8 %x, i8 %f
+  ret i8 %s
+}
+
+define i8 @fshl_zero_shift_guard_swapped(i8 %x, i8 %y, i8 %sh) {
+; CHECK-LABEL: @fshl_zero_shift_guard_swapped(
+; CHECK-NEXT:    [[C:%.*]] = icmp ne i8 [[SH:%.*]], 0
+; CHECK-NEXT:    [[F:%.*]] = call i8 @llvm.fshl.i8(i8 [[X:%.*]], i8 [[Y:%.*]], i8 [[SH]])
+; CHECK-NEXT:    [[S:%.*]] = select i1 [[C]], i8 [[F]], i8 [[X]]
+; CHECK-NEXT:    ret i8 [[S]]
+;
+  %c = icmp ne i8 %sh, 0
+  %f = call i8 @llvm.fshl.i8(i8 %x, i8 %y, i8 %sh)
+  %s = select i1 %c, i8 %f, i8 %x
+  ret i8 %s
+}
+
+define i8 @fshl_zero_shift_guard_inverted(i8 %x, i8 %y, i8 %sh) {
+; CHECK-LABEL: @fshl_zero_shift_guard_inverted(
+; CHECK-NEXT:    [[C:%.*]] = icmp eq i8 [[SH:%.*]], 0
+; CHECK-NEXT:    [[F:%.*]] = call i8 @llvm.fshl.i8(i8 [[X:%.*]], i8 [[Y:%.*]], i8 [[SH]])
+; CHECK-NEXT:    [[S:%.*]] = select i1 [[C]], i8 [[F]], i8 [[X]]
+; CHECK-NEXT:    ret i8 [[S]]
+;
+  %c = icmp eq i8 %sh, 0
+  %f = call i8 @llvm.fshl.i8(i8 %x, i8 %y, i8 %sh)
+  %s = select i1 %c, i8 %f, i8 %x
+  ret i8 %s
+}
+
+define i8 @fshl_zero_shift_guard_inverted_swapped(i8 %x, i8 %y, i8 %sh) {
+; CHECK-LABEL: @fshl_zero_shift_guard_inverted_swapped(
+; CHECK-NEXT:    [[C:%.*]] = icmp ne i8 [[SH:%.*]], 0
+; CHECK-NEXT:    [[F:%.*]] = call i8 @llvm.fshl.i8(i8 [[X:%.*]], i8 [[Y:%.*]], i8 [[SH]])
+; CHECK-NEXT:    [[S:%.*]] = select i1 [[C]], i8 [[X]], i8 [[F]]
+; CHECK-NEXT:    ret i8 [[S]]
+;
+  %c = icmp ne i8 %sh, 0
+  %f = call i8 @llvm.fshl.i8(i8 %x, i8 %y, i8 %sh)
+  %s = select i1 %c, i8 %x, i8 %f
+  ret i8 %s
+}
+
+define i9 @fshr_zero_shift_guard(i9 %x, i9 %y, i9 %sh) {
+; CHECK-LABEL: @fshr_zero_shift_guard(
+; CHECK-NEXT:    [[C:%.*]] = icmp eq i9 [[SH:%.*]], 0
+; CHECK-NEXT:    [[F:%.*]] = call i9 @llvm.fshr.i9(i9 [[X:%.*]], i9 [[Y:%.*]], i9 [[SH]])
+; CHECK-NEXT:    [[S:%.*]] = select i1 [[C]], i9 [[Y]], i9 [[F]]
+; CHECK-NEXT:    ret i9 [[S]]
+;
+  %c = icmp eq i9 %sh, 0
+  %f = call i9 @llvm.fshr.i9(i9 %x, i9 %y, i9 %sh)
+  %s = select i1 %c, i9 %y, i9 %f
+  ret i9 %s
+}
+
+define i9 @fshr_zero_shift_guard_swapped(i9 %x, i9 %y, i9 %sh) {
+; CHECK-LABEL: @fshr_zero_shift_guard_swapped(
+; CHECK-NEXT:    [[C:%.*]] = icmp ne i9 [[SH:%.*]], 0
+; CHECK-NEXT:    [[F:%.*]] = call i9 @llvm.fshr.i9(i9 [[X:%.*]], i9 [[Y:%.*]], i9 [[SH]])
+; CHECK-NEXT:    [[S:%.*]] = select i1 [[C]], i9 [[F]], i9 [[Y]]
+; CHECK-NEXT:    ret i9 [[S]]
+;
+  %c = icmp ne i9 %sh, 0
+  %f = call i9 @llvm.fshr.i9(i9 %x, i9 %y, i9 %sh)
+  %s = select i1 %c, i9 %f, i9 %y
+  ret i9 %s
+}
+
+define i9 @fshr_zero_shift_guard_inverted(i9 %x, i9 %y, i9 %sh) {
+; CHECK-LABEL: @fshr_zero_shift_guard_inverted(
+; CHECK-NEXT:    [[C:%.*]] = icmp eq i9 [[SH:%.*]], 0
+; CHECK-NEXT:    [[F:%.*]] = call i9 @llvm.fshr.i9(i9 [[X:%.*]], i9 [[Y:%.*]], i9 [[SH]])
+; CHECK-NEXT:    [[S:%.*]] = select i1 [[C]], i9 [[F]], i9 [[Y]]
+; CHECK-NEXT:    ret i9 [[S]]
+;
+  %c = icmp eq i9 %sh, 0
+  %f = call i9 @llvm.fshr.i9(i9 %x, i9 %y, i9 %sh)
+  %s = select i1 %c, i9 %f, i9 %y
+  ret i9 %s
+}
+
+define i9 @fshr_zero_shift_guard_inverted_swapped(i9 %x, i9 %y, i9 %sh) {
+; CHECK-LABEL: @fshr_zero_shift_guard_inverted_swapped(
+; CHECK-NEXT:    [[C:%.*]] = icmp ne i9 [[SH:%.*]], 0
+; CHECK-NEXT:    [[F:%.*]] = call i9 @llvm.fshr.i9(i9 [[X:%.*]], i9 [[Y:%.*]], i9 [[SH]])
+; CHECK-NEXT:    [[S:%.*]] = select i1 [[C]], i9 [[Y]], i9 [[F]]
+; CHECK-NEXT:    ret i9 [[S]]
+;
+  %c = icmp ne i9 %sh, 0
+  %f = call i9 @llvm.fshr.i9(i9 %x, i9 %y, i9 %sh)
+  %s = select i1 %c, i9 %y, i9 %f
+  ret i9 %s
+}
+
+define i8 @fshl_zero_shift_guard_wrong_select_op(i8 %x, i8 %y, i8 %sh) {
+; CHECK-LABEL: @fshl_zero_shift_guard_wrong_select_op(
+; CHECK-NEXT:    [[C:%.*]] = icmp eq i8 [[SH:%.*]], 0
+; CHECK-NEXT:    [[F:%.*]] = call i8 @llvm.fshl.i8(i8 [[X:%.*]], i8 [[Y:%.*]], i8 [[SH]])
+; CHECK-NEXT:    [[S:%.*]] = select i1 [[C]], i8 [[Y]], i8 [[F]]
+; CHECK-NEXT:    ret i8 [[S]]
+;
+  %c = icmp eq i8 %sh, 0
+  %f = call i8 @llvm.fshl.i8(i8 %x, i8 %y, i8 %sh)
+  %s = select i1 %c, i8 %y, i8 %f
+  ret i8 %s
+}
+
+define <2 x i8> @fshr_zero_shift_guard_splat(<2 x i8> %x, <2 x i8> %y, <2 x i8> %sh) {
+; CHECK-LABEL: @fshr_zero_shift_guard_splat(
+; CHECK-NEXT:    [[C:%.*]] = icmp eq <2 x i8> [[SH:%.*]], zeroinitializer
+; CHECK-NEXT:    [[F:%.*]] = call <2 x i8> @llvm.fshr.v2i8(<2 x i8> [[X:%.*]], <2 x i8> [[Y:%.*]], <2 x i8> [[SH]])
+; CHECK-NEXT:    [[S:%.*]] = select <2 x i1> [[C]], <2 x i8> [[Y]], <2 x i8> [[F]]
+; CHECK-NEXT:    ret <2 x i8> [[S]]
+;
+  %c = icmp eq <2 x i8> %sh, zeroinitializer
+  %f = call <2 x i8> @llvm.fshr.v2i8(<2 x i8> %x, <2 x i8> %y, <2 x i8> %sh)
+  %s = select <2 x i1> %c, <2 x i8> %y, <2 x i8> %f
+  ret <2 x i8> %s
+}
+

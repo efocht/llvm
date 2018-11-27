@@ -198,7 +198,7 @@ let SchedRW = [WriteQuarterRate32] in {
 defm V_EXP_F32 : VOP1Inst <"v_exp_f32", VOP_F32_F32, fexp2>;
 defm V_LOG_F32 : VOP1Inst <"v_log_f32", VOP_F32_F32, flog2>;
 defm V_RCP_F32 : VOP1Inst <"v_rcp_f32", VOP_F32_F32, AMDGPUrcp>;
-defm V_RCP_IFLAG_F32 : VOP1Inst <"v_rcp_iflag_f32", VOP_F32_F32>;
+defm V_RCP_IFLAG_F32 : VOP1Inst <"v_rcp_iflag_f32", VOP_F32_F32, AMDGPUrcp_iflag>;
 defm V_RSQ_F32 : VOP1Inst <"v_rsq_f32", VOP_F32_F32, AMDGPUrsq>;
 defm V_SQRT_F32 : VOP1Inst <"v_sqrt_f32", VOP_F32_F32, fsqrt>;
 } // End SchedRW = [WriteQuarterRate32]
@@ -242,7 +242,9 @@ def VOP_I32_VI32_NO_EXT : VOPProfile<[i32, i32, untyped, untyped]> {
   let Src0RC64 = VRegSrc_32;
 
   let HasExt = 0;
-  let HasSDWA9 = 0;
+  let HasExtDPP = 0;
+  let HasExtSDWA = 0;
+  let HasExtSDWA9 = 0;
 }
 
 // Special case because there are no true output operands.  Hack vdst
@@ -271,7 +273,10 @@ def VOP_MOVRELD : VOPProfile<[untyped, i32, untyped, untyped]> {
   let AsmSDWA9 = getAsmSDWA9<1, 0, 1>.ret;
 
   let HasExt = 0;
-  let HasSDWA9 = 0;
+  let HasExtDPP = 0;
+  let HasExtSDWA = 0;
+  let HasExtSDWA9 = 0;
+
   let HasDst = 0;
   let EmitDst = 1; // force vdst emission
 }

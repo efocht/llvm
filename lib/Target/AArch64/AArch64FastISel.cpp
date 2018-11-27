@@ -2918,6 +2918,9 @@ bool AArch64FastISel::fastLowerArguments() {
   if (CC != CallingConv::C && CC != CallingConv::Swift)
     return false;
 
+  if (Subtarget->hasCustomCallingConv())
+    return false;
+
   // Only handle simple cases of up to 8 GPR and FPR each.
   unsigned GPRCnt = 0;
   unsigned FPRCnt = 0;
@@ -3208,6 +3211,10 @@ bool AArch64FastISel::fastLowerCall(CallLoweringInfo &CLI) {
   if (!processCallArgs(CLI, OutVTs, NumBytes))
     return false;
 
+  const AArch64RegisterInfo *RegInfo = Subtarget->getRegisterInfo();
+  if (RegInfo->isAnyArgRegReserved(*MF))
+    RegInfo->emitReservedArgRegCallError(*MF);
+
   // Issue the call.
   MachineInstrBuilder MIB;
   if (Subtarget->useSmallAddressing()) {
@@ -3441,6 +3448,21 @@ bool AArch64FastISel::fastLowerIntrinsicCall(const IntrinsicInst *II) {
     }
 
     updateValueMap(II, SrcReg);
+    return true;
+  }
+  case Intrinsic::sponentry: {
+    MachineFrameInfo &MFI = FuncInfo.MF->getFrameInfo();
+
+    // SP = FP + Fixed Object + 16
+    int FI = MFI.CreateFixedObject(4, 0, false);
+    unsigned ResultReg = createResultReg(&AArch64::GPR64spRegClass);
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+            TII.get(AArch64::ADDXri), ResultReg)
+            .addFrameIndex(FI)
+            .addImm(0)
+            .addImm(0);
+
+    updateValueMap(II, ResultReg);
     return true;
   }
   case Intrinsic::memcpy:
@@ -3738,6 +3760,9 @@ bool AArch64FastISel::fastLowerIntrinsicCall(const IntrinsicInst *II) {
               TII.get(TargetOpcode::COPY), ResultReg1).addReg(MulReg);
     }
 
+    if (!ResultReg1)
+      return false;
+
     ResultReg2 = fastEmitInst_rri(AArch64::CSINCWr, &AArch64::GPR32RegClass,
                                   AArch64::WZR, /*IsKill=*/true, AArch64::WZR,
                                   /*IsKill=*/true, getInvertedCondCode(CC));
@@ -3774,7 +3799,7 @@ bool AArch64FastISel::selectRet(const Instruction *I) {
   if (Ret->getNumOperands() > 0) {
     CallingConv::ID CC = F.getCallingConv();
     SmallVector<ISD::OutputArg, 4> Outs;
-    GetReturnInfo(F.getReturnType(), F.getAttributes(), Outs, TLI, DL);
+    GetReturnInfo(CC, F.getReturnType(), F.getAttributes(), Outs, TLI, DL);
 
     // Analyze operands of the call, assigning locations to each operand.
     SmallVector<CCValAssign, 16> ValLocs;
